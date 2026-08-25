@@ -42,11 +42,13 @@ class MainActivity : AppCompatActivity() {
 
         binding.rotateLeftButton.setOnClickListener {
             rotationDegrees.set((rotationDegrees.get() + 270) % 360)
+            updatePreviewRotation()
             updateStatus()
         }
 
         binding.rotateRightButton.setOnClickListener {
             rotationDegrees.set((rotationDegrees.get() + 90) % 360)
+            updatePreviewRotation()
             updateStatus()
         }
 
@@ -120,7 +122,7 @@ class MainActivity : AppCompatActivity() {
             val cropped = Bitmap.createBitmap(paddedBitmap, 0, 0, width, height)
             if (cropped !== paddedBitmap) paddedBitmap.recycle()
 
-            val angle = rotationDegrees.get().toFloat()
+            val angle = ((image.imageInfo.rotationDegrees + rotationDegrees.get()) % 360).toFloat()
             val matrix = Matrix().apply {
                 if (angle != 0f) postRotate(angle)
                 // La preview frontale di molte app è specchiata; lo stream resta non specchiato
@@ -145,6 +147,13 @@ class MainActivity : AppCompatActivity() {
         } finally {
             image.close()
         }
+    }
+
+    private fun updatePreviewRotation() {
+        binding.previewView.animate()
+            .rotation(rotationDegrees.get().toFloat())
+            .setDuration(180)
+            .start()
     }
 
     private fun updateStatus() {
