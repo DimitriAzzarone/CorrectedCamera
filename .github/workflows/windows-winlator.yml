@@ -1,0 +1,35 @@
+name: Build Winlator EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "windows/CorrectedCameraWinlator/**"
+      - ".github/workflows/windows-winlator.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S windows/CorrectedCameraWinlator -B build-winlator -A x64
+
+      - name: Build
+        run: cmake --build build-winlator --config Release
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "build-winlator/Release/CorrectedCamera-Winlator.exe" "dist/CorrectedCamera-Winlator.exe"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorrectedCamera-Winlator
+          path: dist/CorrectedCamera-Winlator.exe
