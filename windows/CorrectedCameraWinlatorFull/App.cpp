@@ -1,7 +1,10 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <gdiplus.h>
 #include <dshow.h>
 #include <strsafe.h>
 #include <atomic>
@@ -11,6 +14,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include "SampleGrabberCompat.h"
 #include "SharedFrame.h"
@@ -28,6 +32,11 @@ static bool gOverlayVisible = false;
 static bool gOverlayRound = true;
 static bool gOverlayLarge = false;
 static HWND gStatus = nullptr;
+static HWND gHostEdit = nullptr;
+static std::thread gStreamThread;
+static std::atomic<bool> gStreamStop{false};
+static SOCKET gStreamSocket = INVALID_SOCKET;
+static ULONG_PTR gGdiplusToken = 0;
 static HBITMAP gPreview = nullptr;
 static std::mutex gPreviewMutex;
 static int gRotation = 0;
@@ -115,6 +124,26 @@ static void CreatePreviewBitmap(const unsigned char* bgr) {
     gPreview = bmp;
 }
 
+
+static void PublishFrame(const std::vector<BYTE>& frame) {
+    if (frame.size() < kPixelBytes) return;
+
+    if (gShared) {
+        InterlockedExchange(&gShared->h.writing, 1);
+        memcpy(gShared->pixels, frame.data(), kPixelBytes);
+        gShared->h.magic = kMagic;
+        gShared->h.width = kOutW;
+        gShared->h.height = kOutH;
+        gShared->h.stride = kOutStride;
+        gShared->h.frameNo++;
+        MemoryBarrier();
+        InterlockedExchange(&gShared->h.writing, 0);
+    }
+
+    CreatePreviewBitmap(frame.data());
+    if (gWnd) PostMessageW(gWnd, WM_FRAME, 0, 0);
+}
+
 static inline void SampleNearest(const BYTE* src, int sw, int sh, int sstride, bool bottomUp,
                                  int x, int y, BYTE* dst) {
     x = std::clamp(x, 0, sw - 1);
@@ -194,20 +223,7 @@ public:
         std::vector<BYTE> frame;
         RotateScaleLetterbox(pBuffer, gSrcW, gSrcH, gBottomUp, gRotation, frame);
 
-        if (gShared) {
-            InterlockedExchange(&gShared->h.writing, 1);
-            memcpy(gShared->pixels, frame.data(), kPixelBytes);
-            gShared->h.magic = kMagic;
-            gShared->h.width = kOutW;
-            gShared->h.height = kOutH;
-            gShared->h.stride = kOutStride;
-            gShared->h.frameNo++;
-            MemoryBarrier();
-            InterlockedExchange(&gShared->h.writing, 0);
-        }
-
-        CreatePreviewBitmap(frame.data());
-        if (gWnd) PostMessageW(gWnd, WM_FRAME, 0, 0);
+        PublishFrame(frame);
         return S_OK;
     }
 };
@@ -306,6 +322,253 @@ static HRESULT StartCamera(int index) {
     WriteStatus(status);
     FreeDevices(devices);
     return hr;
+}
+
+
+static bool DecodeJpegToFrame(const BYTE* data, size_t size, std::vector<BYTE>& out) {
+    if (!data || size < 4) return false;
+
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (!mem) return false;
+
+    void* ptr = GlobalLock(mem);
+    if (!ptr) {
+        GlobalFree(mem);
+        return false;
+    }
+
+    memcpy(ptr, data, size);
+    GlobalUnlock(mem);
+
+    IStream* stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(mem, TRUE, &stream)) || !stream) {
+        GlobalFree(mem);
+        return false;
+    }
+
+    std::unique_ptr<Gdiplus::Bitmap> image(
+        Gdiplus::Bitmap::FromStream(stream, FALSE)
+    );
+    stream->Release();
+
+    if (!image || image->GetLastStatus() != Gdiplus::Ok ||
+        image->GetWidth() == 0 || image->GetHeight() == 0) {
+        return false;
+    }
+
+    std::vector<BYTE> base(kPixelBytes, 0);
+
+    Gdiplus::Bitmap canvas(
+        kOutW,
+        kOutH,
+        kOutStride,
+        PixelFormat24bppRGB,
+        base.data()
+    );
+
+    if (canvas.GetLastStatus() != Gdiplus::Ok) return false;
+
+    Gdiplus::Graphics graphics(&canvas);
+    graphics.Clear(Gdiplus::Color(255, 0, 0, 0));
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+
+    const double sx = (double)kOutW / image->GetWidth();
+    const double sy = (double)kOutH / image->GetHeight();
+    const double scale = std::min(sx, sy);
+
+    const int dw = std::max(1, (int)std::lround(image->GetWidth() * scale));
+    const int dh = std::max(1, (int)std::lround(image->GetHeight() * scale));
+    const int dx = (kOutW - dw) / 2;
+    const int dy = (kOutH - dh) / 2;
+
+    graphics.DrawImage(image.get(), dx, dy, dw, dh);
+
+    if (gRotation == 0) {
+        out.swap(base);
+    } else {
+        RotateScaleLetterbox(
+            base.data(),
+            kOutW,
+            kOutH,
+            false,
+            gRotation,
+            out
+        );
+    }
+
+    return true;
+}
+
+static std::string GetAndroidHost() {
+    wchar_t text[256]{};
+    if (gHostEdit) GetWindowTextW(gHostEdit, text, 255);
+
+    char utf8[512]{};
+    WideCharToMultiByte(
+        CP_UTF8, 0, text, -1,
+        utf8, (int)sizeof(utf8),
+        nullptr, nullptr
+    );
+
+    std::string host = utf8;
+    if (host.empty()) host = "127.0.0.1";
+    return host;
+}
+
+static void StopAndroidStream() {
+    gStreamStop.store(true);
+
+    SOCKET s = gStreamSocket;
+    gStreamSocket = INVALID_SOCKET;
+
+    if (s != INVALID_SOCKET) {
+        shutdown(s, SD_BOTH);
+        closesocket(s);
+    }
+
+    if (gStreamThread.joinable())
+        gStreamThread.join();
+}
+
+static void AndroidStreamWorker(std::string host) {
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    addrinfo* result = nullptr;
+    if (getaddrinfo(host.c_str(), "8080", &hints, &result) != 0) {
+        WriteStatus(L"Impossibile risolvere l'indirizzo Android.");
+        return;
+    }
+
+    SOCKET sock = INVALID_SOCKET;
+
+    for (addrinfo* p = result; p; p = p->ai_next) {
+        sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (sock == INVALID_SOCKET) continue;
+
+        DWORD timeoutMs = 2500;
+        setsockopt(
+            sock,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&timeoutMs),
+            sizeof(timeoutMs)
+        );
+
+        if (connect(sock, p->ai_addr, (int)p->ai_addrlen) == 0)
+            break;
+
+        closesocket(sock);
+        sock = INVALID_SOCKET;
+    }
+
+    freeaddrinfo(result);
+
+    if (sock == INVALID_SOCKET) {
+        WriteStatus(
+            L"Connessione Android fallita. Prova l'IP mostrato nell'app Android."
+        );
+        return;
+    }
+
+    gStreamSocket = sock;
+
+    const std::string request =
+        "GET /video HTTP/1.1\r\n"
+        "Host: " + host + "\r\n"
+        "Connection: keep-alive\r\n\r\n";
+
+    if (send(sock, request.c_str(), (int)request.size(), 0) <= 0) {
+        closesocket(sock);
+        gStreamSocket = INVALID_SOCKET;
+        WriteStatus(L"Errore richiesta stream Android.");
+        return;
+    }
+
+    WriteStatus(
+        L"Android collegato | MJPEG -> CorrectedCamera Virtual Camera"
+    );
+
+    std::vector<BYTE> buffer;
+    buffer.reserve(1024 * 1024);
+    BYTE chunk[16384];
+
+    const BYTE soi[] = {0xFF, 0xD8};
+    const BYTE eoi[] = {0xFF, 0xD9};
+
+    while (!gStreamStop.load()) {
+        int n = recv(sock, reinterpret_cast<char*>(chunk), sizeof(chunk), 0);
+
+        if (n == 0) break;
+
+        if (n < 0) {
+            const int err = WSAGetLastError();
+            if (err == WSAETIMEDOUT) continue;
+            break;
+        }
+
+        buffer.insert(buffer.end(), chunk, chunk + n);
+
+        while (true) {
+            auto begin = std::search(
+                buffer.begin(), buffer.end(),
+                std::begin(soi), std::end(soi)
+            );
+
+            if (begin == buffer.end()) {
+                if (buffer.size() > 2 * 1024 * 1024)
+                    buffer.clear();
+                break;
+            }
+
+            auto end = std::search(
+                begin + 2, buffer.end(),
+                std::begin(eoi), std::end(eoi)
+            );
+
+            if (end == buffer.end()) {
+                if (begin != buffer.begin())
+                    buffer.erase(buffer.begin(), begin);
+                break;
+            }
+
+            end += 2;
+
+            std::vector<BYTE> frame;
+            if (DecodeJpegToFrame(
+                    &(*begin),
+                    (size_t)(end - begin),
+                    frame
+                )) {
+                PublishFrame(frame);
+            }
+
+            buffer.erase(buffer.begin(), end);
+        }
+    }
+
+    if (gStreamSocket == sock)
+        gStreamSocket = INVALID_SOCKET;
+
+    closesocket(sock);
+
+    if (!gStreamStop.load()) {
+        WriteStatus(
+            L"Stream Android interrotto. Premi Connetti Android per riprovare."
+        );
+    }
+}
+
+static void StartAndroidStream() {
+    StopAndroidStream();
+    StopGraph();
+    gStreamStop.store(false);
+
+    const std::string host = GetAndroidHost();
+    WriteStatus(L"Connessione allo stream Android...");
+    gStreamThread = std::thread(AndroidStreamWorker, host);
 }
 
 static void InitSharedMemory() {
@@ -453,28 +716,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                       608, 48, 170, 36, hwnd, (HMENU)106, nullptr, nullptr);
 
         CreateWindowW(L"BUTTON", L"Mostra in primo piano", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
-                      16, 92, 230, 38, hwnd, (HMENU)107, nullptr, nullptr);
+                      16, 92, 210, 38, hwnd, (HMENU)107, nullptr, nullptr);
 
-        gStatus = CreateWindowW(L"STATIC", L"Avvio...", WS_CHILD|WS_VISIBLE,
-                               260, 99, 518, 24, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowW(L"STATIC", L"IP Android:", WS_CHILD|WS_VISIBLE,
+                      238, 100, 85, 24, hwnd, nullptr, nullptr, nullptr);
 
-        PostMessageW(hwnd, WM_COMMAND, 104, 0);
+        gHostEdit = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            L"127.0.0.1",
+            WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
+            322, 94, 170, 34,
+            hwnd, (HMENU)108, nullptr, nullptr
+        );
+
+        CreateWindowW(L"BUTTON", L"Connetti Android", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+                      502, 92, 165, 38, hwnd, (HMENU)109, nullptr, nullptr);
+
+        gStatus = CreateWindowW(
+            L"STATIC",
+            L"Apri CorrectedCamera Android, poi premi Connetti Android",
+            WS_CHILD|WS_VISIBLE,
+            16, 136, 762, 24,
+            hwnd, nullptr, nullptr, nullptr
+        );
+
         return 0;
 
     case WM_COMMAND:
         if (LOWORD(wp) == 101) {
             gRotation = (gRotation + 270) % 360;
-            StartCamera(gCameraIndex);
         } else if (LOWORD(wp) == 102) {
             gRotation = (gRotation + 90) % 360;
-            StartCamera(gCameraIndex);
         } else if (LOWORD(wp) == 103) {
-            auto d = EnumerateCameras();
-            int count = (int)d.size();
-            FreeDevices(d);
-            if (count > 0) StartCamera((gCameraIndex + 1) % count);
+            WriteStatus(L"Cambia camera dall'app Android: lo stream Winlator si aggiorna automaticamente.");
         } else if (LOWORD(wp) == 104) {
-            StartCamera(gCameraIndex);
+            StartAndroidStream();
         } else if (LOWORD(wp) == 105) {
             gOverlayRound = !gOverlayRound;
             if (lp) SetWindowTextW((HWND)lp, gOverlayRound ? L"Forma: tondo" : L"Forma: quadrato");
@@ -486,6 +763,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (LOWORD(wp) == 107) {
             ToggleOverlay();
             if (lp) SetWindowTextW((HWND)lp, gOverlayVisible ? L"Nascondi primo piano" : L"Mostra in primo piano");
+        } else if (LOWORD(wp) == 109) {
+            StartAndroidStream();
         }
         return 0;
 
@@ -499,7 +778,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rc{}; GetClientRect(hwnd, &rc);
-        RECT box{16, 142, rc.right-16, rc.bottom-16};
+        RECT box{16, 174, rc.right-16, rc.bottom-16};
         HBRUSH panelBrush = CreateSolidBrush(RGB(20, 25, 30));
         FillRect(dc, &box, panelBrush);
         DeleteObject(panelBrush);
@@ -521,6 +800,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_DESTROY:
+        StopAndroidStream();
         StopGraph();
         {
             std::lock_guard<std::mutex> lock(gPreviewMutex);
@@ -535,6 +815,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        return 2;
+
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    if (Gdiplus::GdiplusStartup(
+            &gGdiplusToken,
+            &gdiplusInput,
+            nullptr
+        ) != Gdiplus::Ok) {
+        WSACleanup();
+        return 3;
+    }
+
     InitSharedMemory();
     gInst = hi;
 
@@ -580,6 +875,11 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (gGdiplusToken)
+        Gdiplus::GdiplusShutdown(gGdiplusToken);
+
+    WSACleanup();
+
     if (SUCCEEDED(hr)) CoUninitialize();
     return (int)msg.wParam;
 }

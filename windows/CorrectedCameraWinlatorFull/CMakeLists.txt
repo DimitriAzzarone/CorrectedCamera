@@ -5,7 +5,7 @@ project(CorrectedCameraWinlatorFull LANGUAGES CXX)
 add_executable(CorrectedCamera WIN32 App.cpp)
 target_compile_features(CorrectedCamera PRIVATE cxx_std_17)
 target_compile_definitions(CorrectedCamera PRIVATE UNICODE _UNICODE)
-target_link_libraries(CorrectedCamera PRIVATE strmiids ole32 oleaut32 user32 gdi32)
+target_link_libraries(CorrectedCamera PRIVATE strmiids ole32 oleaut32 user32 gdi32 ws2_32 gdiplus)
 
 add_library(CorrectedCameraVirtualCam SHARED VirtualCam.cpp VirtualCam.def)
 target_compile_features(CorrectedCameraVirtualCam PRIVATE cxx_std_17)
