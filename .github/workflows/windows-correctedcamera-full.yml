@@ -1,0 +1,51 @@
+
+name: Build Full CorrectedCamera Winlator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "windows/CorrectedCameraWinlatorFull/**"
+      - ".github/workflows/windows-correctedcamera-full.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S windows/CorrectedCameraWinlatorFull -B build-full -A x64
+
+      - name: Build Release
+        run: cmake --build build-full --config Release
+
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "build-full/Release/CorrectedCamera.exe" "dist/CorrectedCamera.exe"
+          Copy-Item "build-full/Release/CorrectedCameraVirtualCam.dll" "dist/CorrectedCameraVirtualCam.dll"
+          Copy-Item "build-full/Release/CorrectedCamera-Setup.exe" "dist/CorrectedCamera-Setup.exe"
+          Copy-Item "build-full/Release/CorrectedCamera-Uninstall.exe" "dist/CorrectedCamera-Uninstall.exe"
+
+      - name: Verify
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/CorrectedCamera.exe",
+            "dist/CorrectedCameraVirtualCam.dll",
+            "dist/CorrectedCamera-Setup.exe",
+            "dist/CorrectedCamera-Uninstall.exe"
+          )
+          foreach ($f in $required) {
+            if (!(Test-Path $f)) { throw "Missing $f" }
+          }
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CorrectedCamera-Winlator-Full
+          path: dist/*
