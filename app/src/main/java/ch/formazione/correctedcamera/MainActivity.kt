@@ -2,6 +2,7 @@ package ch.formazione.correctedcamera
 
 import android.Manifest
 import android.app.PictureInPictureParams
+import android.app.ActivityManager
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Outline
@@ -173,6 +174,24 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    private fun hideWindowTaskTitle() {
+        title = ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            setTaskDescription(
+                ActivityManager.TaskDescription("")
+            )
+        }
+    }
+
+    private fun restoreWindowTaskTitle() {
+        title = "Corrected Camera"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            setTaskDescription(
+                ActivityManager.TaskDescription("Corrected Camera")
+            )
+        }
+    }
+
     private fun configurePictureInPicture() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ratio = if (pipCircular) Rational(1, 1) else Rational(4, 3)
@@ -197,6 +216,7 @@ class MainActivity : AppCompatActivity() {
     private fun enterCorrectedCameraPip() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
+                hideWindowTaskTitle()
                 val ratio = if (pipCircular) Rational(1, 1) else Rational(4, 3)
 
                 val builder = PictureInPictureParams.Builder()
@@ -245,6 +265,13 @@ class MainActivity : AppCompatActivity() {
 
         binding.statusText.visibility = visibility
         binding.controlsContainer.visibility = visibility
+
+        if (isInPictureInPictureMode) {
+            hideWindowTaskTitle()
+        } else {
+            restoreWindowTaskTitle()
+        }
+
         applyPipShape(isInPictureInPictureMode)
     }
 
