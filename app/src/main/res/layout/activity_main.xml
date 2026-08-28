@@ -29,7 +29,52 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <LinearLayout\n            android:layout_width="match_parent"\n            android:layout_height="wrap_content"\n            android:orientation="horizontal">\n\n            <Button\n                android:id="@+id/rotateLeftButton"\n                android:layout_width="0dp"\n                android:layout_height="wrap_content"\n                android:layout_weight="1"\n                android:text="↺ 90°"/>\n\n            <Button\n                android:id="@+id/rotateRightButton"\n                android:layout_width="0dp"\n                android:layout_height="wrap_content"\n                android:layout_weight="1"\n                android:text="↻ 90°"/>\n        </LinearLayout>\n\n        <LinearLayout\n            android:layout_width="match_parent"\n            android:layout_height="wrap_content"\n            android:orientation="horizontal">\n\n            <Button\n                android:id="@+id/photoButton"\n                android:layout_width="0dp"\n                android:layout_height="wrap_content"\n                android:layout_weight="1"\n                android:text="📷 Foto"/>\n\n            <Button\n                android:id="@+id/videoButton"\n                android:layout_width="0dp"\n                android:layout_height="wrap_content"\n                android:layout_weight="1"\n                android:text="● Registra video"/>\n        </LinearLayout>\n\n        <Button\n            android:id="@+id/switchCameraButton"\n            android:layout_width="match_parent"\n            android:layout_height="wrap_content"\n            android:text="Cambia fotocamera"/>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/rotateLeftButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="↺ 90°"/>
+
+            <Button
+                android:id="@+id/rotateRightButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="↻ 90°"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/photoButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="📷 Foto"/>
+
+            <Button
+                android:id="@+id/videoButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="● Registra video"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/switchCameraButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Cambia fotocamera"/>
+
         <Button
             android:id="@+id/alwaysOnTopButton"
             android:layout_width="match_parent"
