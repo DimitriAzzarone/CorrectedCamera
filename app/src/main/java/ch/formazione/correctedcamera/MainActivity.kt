@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var activeRecording: Recording? = null
 
     private var pipCircular = true
-    private var pipLarge = true
+    private var pipSizeMode = 1 // 0=piccola, 1=media, 2=grande
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -140,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.pipSizeButton.setOnClickListener {
-            pipLarge = !pipLarge
+            pipSizeMode = (pipSizeMode + 1) % 3
             updatePipChoiceButtons()
         }
 
@@ -166,7 +166,11 @@ class MainActivity : AppCompatActivity() {
             if (pipCircular) "Forma: tondo" else "Forma: quadrato"
 
         binding.pipSizeButton.text =
-            if (pipLarge) "Dimensione: grande" else "Dimensione: piccola"
+            when (pipSizeMode) {
+                0 -> "Dimensione: piccola"
+                1 -> "Dimensione: media"
+                else -> "Dimensione: grande"
+            }
     }
 
     private fun configurePictureInPicture() {
@@ -262,13 +266,21 @@ class MainActivity : AppCompatActivity() {
 
             val params = binding.processedImageView.layoutParams as android.widget.FrameLayout.LayoutParams
 
-            if (pipLarge) {
-                params.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                params.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
-            } else {
-                val size = dp(130)
-                params.width = size
-                params.height = size
+            when (pipSizeMode) {
+                0 -> {
+                    val size = dp(130)
+                    params.width = size
+                    params.height = size
+                }
+                1 -> {
+                    val size = dp(185)
+                    params.width = size
+                    params.height = size
+                }
+                else -> {
+                    params.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    params.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                }
             }
             params.gravity = Gravity.CENTER
             binding.processedImageView.layoutParams = params
