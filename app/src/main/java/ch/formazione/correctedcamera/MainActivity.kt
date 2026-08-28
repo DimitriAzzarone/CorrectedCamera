@@ -1,6 +1,7 @@
 package ch.formazione.correctedcamera
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -8,7 +9,9 @@ import android.graphics.Matrix
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Rational
 import android.view.Surface
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -65,6 +68,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         streamServer.start()
+        configurePictureInPicture()
 
         binding.rotateLeftButton.setOnClickListener {
             if (activeRecording == null) {
@@ -95,6 +99,10 @@ class MainActivity : AppCompatActivity() {
             toggleVideoRecording()
         }
 
+        binding.alwaysOnTopButton.setOnClickListener {
+            enterCorrectedCameraPip()
+        }
+
         if (
             ContextCompat.checkSelfPermission(
                 this,
@@ -105,6 +113,66 @@ class MainActivity : AppCompatActivity() {
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+
+    private fun configurePictureInPicture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(4, 3))
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(true)
+                builder.setSeamlessResizeEnabled(true)
+            }
+
+            setPictureInPictureParams(builder.build())
+        }
+    }
+
+    private fun enterCorrectedCameraPip() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                enterPictureInPictureMode(
+                    PictureInPictureParams.Builder()
+                        .setAspectRatio(Rational(4, 3))
+                        .build()
+                )
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this,
+                    "Impossibile aprire la finestra mobile: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+
+        if (
+            Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S &&
+            !isInPictureInPictureMode
+        ) {
+            enterCorrectedCameraPip()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(
+            isInPictureInPictureMode,
+            newConfig
+        )
+
+        val visibility =
+            if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+
+        binding.statusText.visibility = visibility
+        binding.controlsContainer.visibility = visibility
     }
 
     private fun startCamera() {
