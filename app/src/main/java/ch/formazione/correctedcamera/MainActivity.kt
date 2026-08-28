@@ -180,6 +180,11 @@ class MainActivity : AppCompatActivity() {
             val builder = PictureInPictureParams.Builder()
                 .setAspectRatio(ratio)
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                builder.setTitle("")
+                builder.setSubtitle("")
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 builder.setAutoEnterEnabled(true)
                 builder.setSeamlessResizeEnabled(true)
@@ -194,10 +199,16 @@ class MainActivity : AppCompatActivity() {
             try {
                 val ratio = if (pipCircular) Rational(1, 1) else Rational(4, 3)
 
+                val builder = PictureInPictureParams.Builder()
+                    .setAspectRatio(ratio)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    builder.setTitle("")
+                    builder.setSubtitle("")
+                }
+
                 enterPictureInPictureMode(
-                    PictureInPictureParams.Builder()
-                        .setAspectRatio(ratio)
-                        .build()
+                    builder.build()
                 )
             } catch (e: Exception) {
                 Toast.makeText(
