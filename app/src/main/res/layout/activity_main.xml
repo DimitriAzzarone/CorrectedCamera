@@ -4,23 +4,33 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:background="#101418"
+    android:padding="14dp">
 
-    <ImageView
-        android:id="@+id/processedImageView"
+    <FrameLayout
+        android:id="@+id/previewFrame"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="#000000"
-        android:scaleType="centerCrop"
-        android:contentDescription="Anteprima fotocamera corretta"/>
+        android:background="@drawable/panel_preview"
+        android:padding="6dp">
+
+        <ImageView
+            android:id="@+id/processedImageView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#000000"
+            android:scaleType="centerCrop"
+            android:contentDescription="Anteprima fotocamera corretta"/>
+    </FrameLayout>
 
     <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Avvio fotocamera..."
-        android:textSize="16sp"
+        android:textColor="#D8E0E6"
+        android:textSize="14sp"
         android:paddingTop="8dp"
         android:paddingBottom="8dp"/>
 
@@ -36,12 +46,15 @@
             android:orientation="horizontal">
             <Button
                 android:id="@+id/rotateLeftButton"
+                style="@style/CorrectedCameraButton.Secondary"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="↺ 90°"/>
+            <Space android:layout_width="8dp" android:layout_height="1dp"/>
             <Button
                 android:id="@+id/rotateRightButton"
+                style="@style/CorrectedCameraButton.Secondary"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -51,15 +64,19 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:orientation="horizontal">
             <Button
                 android:id="@+id/photoButton"
+                style="@style/CorrectedCameraButton.Primary"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="📷 Foto"/>
+            <Space android:layout_width="8dp" android:layout_height="1dp"/>
             <Button
                 android:id="@+id/videoButton"
+                style="@style/CorrectedCameraButton.Primary"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -68,20 +85,56 @@
 
         <Button
             android:id="@+id/screenVideoButton"
+            style="@style/CorrectedCameraButton.Primary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:text="⏺ Registra schermo completo"/>
 
         <Button
             android:id="@+id/switchCameraButton"
+            style="@style/CorrectedCameraButton.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:text="Cambia fotocamera"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Finestra in primo piano"
+            android:textColor="#92A0AA"
+            android:textSize="13sp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+            <Button
+                android:id="@+id/pipShapeButton"
+                style="@style/CorrectedCameraButton.Secondary"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Forma: tondo"/>
+            <Space android:layout_width="8dp" android:layout_height="1dp"/>
+            <Button
+                android:id="@+id/pipSizeButton"
+                style="@style/CorrectedCameraButton.Secondary"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Dimensione: grande"/>
+        </LinearLayout>
 
         <Button
             android:id="@+id/alwaysOnTopButton"
+            style="@style/CorrectedCameraButton.Accent"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:text="◉ Sempre in primo piano"/>
     </LinearLayout>
 </LinearLayout>

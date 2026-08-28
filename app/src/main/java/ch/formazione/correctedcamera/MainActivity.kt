@@ -9,12 +9,14 @@ import android.media.projection.MediaProjectionManager
 import android.view.ViewOutlineProvider
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Rational
 import android.view.Surface
+import android.view.Gravity
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,6 +57,9 @@ class MainActivity : AppCompatActivity() {
     private var useFrontCamera = false
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
+
+    private var pipCircular = true
+    private var pipLarge = true
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -130,6 +135,16 @@ class MainActivity : AppCompatActivity() {
             toggleScreenRecording()
         }
 
+        binding.pipShapeButton.setOnClickListener {
+            pipCircular = !pipCircular
+            updatePipChoiceButtons()
+        }
+
+        binding.pipSizeButton.setOnClickListener {
+            pipLarge = !pipLarge
+            updatePipChoiceButtons()
+        }
+
         binding.alwaysOnTopButton.setOnClickListener {
             enterCorrectedCameraPip()
         }
@@ -147,10 +162,20 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    private fun updatePipChoiceButtons() {
+        binding.pipShapeButton.text =
+            if (pipCircular) "Forma: tondo" else "Forma: quadrato"
+
+        binding.pipSizeButton.text =
+            if (pipLarge) "Dimensione: grande" else "Dimensione: piccola"
+    }
+
     private fun configurePictureInPicture() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ratio = if (pipCircular) Rational(1, 1) else Rational(4, 3)
+
             val builder = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(1, 1))
+                .setAspectRatio(ratio)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 builder.setAutoEnterEnabled(true)
@@ -164,9 +189,11 @@ class MainActivity : AppCompatActivity() {
     private fun enterCorrectedCameraPip() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
+                val ratio = if (pipCircular) Rational(1, 1) else Rational(4, 3)
+
                 enterPictureInPictureMode(
                     PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(1, 1))
+                        .setAspectRatio(ratio)
                         .build()
                 )
             } catch (e: Exception) {
@@ -227,27 +254,64 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyPipShape(inPip: Boolean) {
         if (inPip) {
+            window.setBackgroundDrawableResource(android.R.color.transparent)
+            window.decorView.setBackgroundColor(Color.TRANSPARENT)
+            binding.rootContainer.setBackgroundColor(Color.TRANSPARENT)
             binding.rootContainer.setPadding(0, 0, 0, 0)
-            binding.processedImageView.outlineProvider =
-                object : ViewOutlineProvider() {
-                    override fun getOutline(
-                        view: android.view.View,
-                        outline: Outline
-                    ) {
-                        outline.setOval(
-                            0,
-                            0,
-                            view.width,
-                            view.height
-                        )
-                    }
-                }
-            binding.processedImageView.clipToOutline = true
+            binding.previewFrame.setPadding(0, 0, 0, 0)
+            binding.previewFrame.background = null
+
+            val params = binding.processedImageView.layoutParams as android.widget.FrameLayout.LayoutParams
+
+            if (pipLarge) {
+                params.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                params.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            } else {
+                val size = dp(130)
+                params.width = size
+                params.height = size
+            }
+            params.gravity = Gravity.CENTER
+            binding.processedImageView.layoutParams = params
             binding.processedImageView.scaleType =
                 android.widget.ImageView.ScaleType.CENTER_CROP
+
+            if (pipCircular) {
+                binding.processedImageView.outlineProvider =
+                    object : ViewOutlineProvider() {
+                        override fun getOutline(
+                            view: android.view.View,
+                            outline: Outline
+                        ) {
+                            outline.setOval(0, 0, view.width, view.height)
+                        }
+                    }
+                binding.processedImageView.clipToOutline = true
+            } else {
+                binding.processedImageView.clipToOutline = false
+                binding.processedImageView.outlineProvider = null
+            }
         } else {
-            val p = dp(12)
+            window.decorView.setBackgroundColor(Color.rgb(16, 20, 24))
+            binding.rootContainer.setBackgroundColor(Color.rgb(16, 20, 24))
+
+            val p = dp(14)
             binding.rootContainer.setPadding(p, p, p, p)
+
+            val previewPadding = dp(6)
+            binding.previewFrame.setPadding(
+                previewPadding, previewPadding, previewPadding, previewPadding
+            )
+            binding.previewFrame.setBackgroundResource(
+                ch.formazione.correctedcamera.R.drawable.panel_preview
+            )
+
+            val params = binding.processedImageView.layoutParams as android.widget.FrameLayout.LayoutParams
+            params.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            params.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            params.gravity = Gravity.CENTER
+            binding.processedImageView.layoutParams = params
+
             binding.processedImageView.clipToOutline = false
             binding.processedImageView.outlineProvider = null
             binding.processedImageView.scaleType =
