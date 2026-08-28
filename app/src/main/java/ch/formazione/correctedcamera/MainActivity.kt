@@ -1,33 +1,53 @@
 package ch.formazione.correctedcamera
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
+import android.view.Surface
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
 import ch.formazione.correctedcamera.databinding.ActivityMainBinding
 import java.io.ByteArrayOutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val streamServer = MjpegServer(8080)
 
     private val userRotation = AtomicInteger(0)
+    private val latestCorrectedJpeg = AtomicReference<ByteArray?>(null)
 
     private var useFrontCamera = false
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var activeRecording: Recording? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -47,18 +67,32 @@ class MainActivity : AppCompatActivity() {
         streamServer.start()
 
         binding.rotateLeftButton.setOnClickListener {
-            userRotation.set((userRotation.get() + 270) % 360)
-            updateStatus()
+            if (activeRecording == null) {
+                userRotation.set((userRotation.get() + 270) % 360)
+                startCamera()
+            }
         }
 
         binding.rotateRightButton.setOnClickListener {
-            userRotation.set((userRotation.get() + 90) % 360)
-            updateStatus()
+            if (activeRecording == null) {
+                userRotation.set((userRotation.get() + 90) % 360)
+                startCamera()
+            }
         }
 
         binding.switchCameraButton.setOnClickListener {
-            useFrontCamera = !useFrontCamera
-            startCamera()
+            if (activeRecording == null) {
+                useFrontCamera = !useFrontCamera
+                startCamera()
+            }
+        }
+
+        binding.photoButton.setOnClickListener {
+            saveCorrectedPhoto()
+        }
+
+        binding.videoButton.setOnClickListener {
+            toggleVideoRecording()
         }
 
         if (
@@ -94,6 +128,21 @@ class MainActivity : AppCompatActivity() {
                 processFrame(image)
             }
 
+            val recorder = Recorder.Builder()
+                .setQualitySelector(
+                    QualitySelector.from(
+                        Quality.HD,
+                        androidx.camera.video.FallbackStrategy.lowerQualityOrHigherThan(
+                            Quality.SD
+                        )
+                    )
+                )
+                .build()
+
+            val capture = VideoCapture.withOutput(recorder)
+            capture.targetRotation = rotationToSurface(userRotation.get())
+            videoCapture = capture
+
             val selector =
                 if (useFrontCamera) {
                     CameraSelector.DEFAULT_FRONT_CAMERA
@@ -108,7 +157,8 @@ class MainActivity : AppCompatActivity() {
                 provider.bindToLifecycle(
                     this,
                     selector,
-                    analysis
+                    analysis,
+                    capture
                 )
 
                 updateStatus()
@@ -133,17 +183,12 @@ class MainActivity : AppCompatActivity() {
             val height = image.height
 
             val plane = image.planes[0]
-
             val buffer = plane.buffer
 
             val pixelStride = plane.pixelStride
             val rowStride = plane.rowStride
-
-            val rowPadding =
-                rowStride - pixelStride * width
-
-            val paddedWidth =
-                width + rowPadding / pixelStride
+            val rowPadding = rowStride - pixelStride * width
+            val paddedWidth = width + rowPadding / pixelStride
 
             val paddedBitmap =
                 Bitmap.createBitmap(
@@ -153,7 +198,6 @@ class MainActivity : AppCompatActivity() {
                 )
 
             buffer.rewind()
-
             paddedBitmap.copyPixelsFromBuffer(buffer)
 
             cropped =
@@ -167,21 +211,14 @@ class MainActivity : AppCompatActivity() {
 
             paddedBitmap.recycle()
 
-            val cameraRotation =
-                image.imageInfo.rotationDegrees
-
-            val requestedRotation =
-                userRotation.get()
-
-            val finalRotation =
-                (cameraRotation + requestedRotation) % 360
+            val cameraRotation = image.imageInfo.rotationDegrees
+            val requestedRotation = userRotation.get()
+            val finalRotation = (cameraRotation + requestedRotation) % 360
 
             val matrix = Matrix()
 
             if (finalRotation != 0) {
-                matrix.postRotate(
-                    finalRotation.toFloat()
-                )
+                matrix.postRotate(finalRotation.toFloat())
             }
 
             transformed =
@@ -212,10 +249,7 @@ class MainActivity : AppCompatActivity() {
                 )
 
             runOnUiThread {
-
-                binding.processedImageView.setImageBitmap(
-                    previewBitmap
-                )
+                binding.processedImageView.setImageBitmap(previewBitmap)
             }
 
             val jpeg =
@@ -223,19 +257,19 @@ class MainActivity : AppCompatActivity() {
 
                     transformed.compress(
                         Bitmap.CompressFormat.JPEG,
-                        75,
+                        92,
                         output
                     )
 
                     output.toByteArray()
                 }
 
+            latestCorrectedJpeg.set(jpeg)
             streamServer.updateFrame(jpeg)
 
         } catch (e: Exception) {
 
             runOnUiThread {
-
                 binding.statusText.text =
                     "Errore frame: ${e.message}"
             }
@@ -244,9 +278,244 @@ class MainActivity : AppCompatActivity() {
 
             transformed?.recycle()
             cropped?.recycle()
-
             image.close()
         }
+    }
+
+    private fun saveCorrectedPhoto() {
+
+        val jpeg = latestCorrectedJpeg.get()
+
+        if (jpeg == null) {
+            Toast.makeText(
+                this,
+                "Attendi che la fotocamera sia pronta",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        try {
+
+            val name =
+                "CorrectedCamera_${timestamp()}.jpg"
+
+            val values =
+                ContentValues().apply {
+                    put(
+                        MediaStore.Images.Media.DISPLAY_NAME,
+                        name
+                    )
+                    put(
+                        MediaStore.Images.Media.MIME_TYPE,
+                        "image/jpeg"
+                    )
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            "Pictures/CorrectedCamera"
+                        )
+                        put(
+                            MediaStore.Images.Media.IS_PENDING,
+                            1
+                        )
+                    }
+                }
+
+            val uri =
+                contentResolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    values
+                ) ?: error("Impossibile creare la foto")
+
+            contentResolver
+                .openOutputStream(uri)
+                .use { output ->
+
+                    requireNotNull(output)
+                    output.write(jpeg)
+                }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
+                values.clear()
+                values.put(
+                    MediaStore.Images.Media.IS_PENDING,
+                    0
+                )
+
+                contentResolver.update(
+                    uri,
+                    values,
+                    null,
+                    null
+                )
+            }
+
+            Toast.makeText(
+                this,
+                "Foto salvata in Pictures/CorrectedCamera",
+                Toast.LENGTH_SHORT
+            ).show()
+
+        } catch (e: Exception) {
+
+            Toast.makeText(
+                this,
+                "Errore foto: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun toggleVideoRecording() {
+
+        if (activeRecording != null) {
+
+            activeRecording?.stop()
+            return
+        }
+
+        val capture =
+            videoCapture ?: run {
+
+                Toast.makeText(
+                    this,
+                    "Videocamera non ancora pronta",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                return
+            }
+
+        capture.targetRotation =
+            rotationToSurface(
+                userRotation.get()
+            )
+
+        val name =
+            "CorrectedCamera_${timestamp()}.mp4"
+
+        val values =
+            ContentValues().apply {
+
+                put(
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    name
+                )
+
+                put(
+                    MediaStore.Video.Media.MIME_TYPE,
+                    "video/mp4"
+                )
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(
+                        MediaStore.Video.Media.RELATIVE_PATH,
+                        "Movies/CorrectedCamera"
+                    )
+                }
+            }
+
+        val outputOptions =
+            MediaStoreOutputOptions
+                .Builder(
+                    contentResolver,
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                )
+                .setContentValues(values)
+                .build()
+
+        activeRecording =
+            capture.output
+                .prepareRecording(
+                    this,
+                    outputOptions
+                )
+                .start(
+                    ContextCompat.getMainExecutor(this)
+                ) { event ->
+
+                    when (event) {
+
+                        is VideoRecordEvent.Start -> {
+                            setRecordingUi(true)
+                        }
+
+                        is VideoRecordEvent.Finalize -> {
+
+                            activeRecording = null
+                            setRecordingUi(false)
+
+                            if (event.hasError()) {
+
+                                Toast.makeText(
+                                    this,
+                                    "Errore video: ${event.error}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+
+                            } else {
+
+                                Toast.makeText(
+                                    this,
+                                    "Video salvato in Movies/CorrectedCamera",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+
+                            updateStatus()
+                        }
+                    }
+                }
+    }
+
+    private fun setRecordingUi(recording: Boolean) {
+
+        binding.videoButton.text =
+            if (recording) {
+                "■ Ferma video"
+            } else {
+                "● Registra video"
+            }
+
+        binding.rotateLeftButton.isEnabled =
+            !recording
+
+        binding.rotateRightButton.isEnabled =
+            !recording
+
+        binding.switchCameraButton.isEnabled =
+            !recording
+
+        binding.photoButton.isEnabled =
+            !recording
+
+        updateStatus()
+    }
+
+    private fun rotationToSurface(
+        degrees: Int
+    ): Int {
+
+        return when (
+            ((degrees % 360) + 360) % 360
+        ) {
+
+            90 -> Surface.ROTATION_90
+            180 -> Surface.ROTATION_180
+            270 -> Surface.ROTATION_270
+            else -> Surface.ROTATION_0
+        }
+    }
+
+    private fun timestamp(): String {
+
+        return SimpleDateFormat(
+            "yyyyMMdd_HHmmss",
+            Locale.US
+        ).format(Date())
     }
 
     private fun updateStatus() {
@@ -261,8 +530,15 @@ class MainActivity : AppCompatActivity() {
                 "posteriore"
             }
 
+        val recording =
+            if (activeRecording != null) {
+                " · REC"
+            } else {
+                ""
+            }
+
         binding.statusText.text =
-            "Camera $camera · rotazione ${userRotation.get()}° · http://$ip:8080/video"
+            "Camera $camera · rotazione ${userRotation.get()}°$recording · http://$ip:8080/video"
     }
 
     private fun localIpv4(): String? {
@@ -289,10 +565,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
 
-        super.onDestroy()
+        activeRecording?.stop()
+        activeRecording = null
 
         streamServer.stop()
-
         cameraExecutor.shutdown()
+
+        super.onDestroy()
     }
 }
