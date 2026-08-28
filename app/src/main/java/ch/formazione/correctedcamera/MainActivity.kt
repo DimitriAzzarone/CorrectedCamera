@@ -3,6 +3,10 @@ package ch.formazione.correctedcamera
 import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.ContentValues
+import android.content.Intent
+import android.graphics.Outline
+import android.media.projection.MediaProjectionManager
+import android.view.ViewOutlineProvider
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
@@ -52,6 +56,29 @@ class MainActivity : AppCompatActivity() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
 
+    private val screenCaptureLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+
+            if (result.resultCode == RESULT_OK && data != null) {
+                val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_START
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+                }
+
+                ContextCompat.startForegroundService(this, serviceIntent)
+                binding.screenVideoButton.text = "■ Ferma registrazione schermo"
+                enterCorrectedCameraPip()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Registrazione schermo annullata",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
@@ -99,6 +126,10 @@ class MainActivity : AppCompatActivity() {
             toggleVideoRecording()
         }
 
+        binding.screenVideoButton.setOnClickListener {
+            toggleScreenRecording()
+        }
+
         binding.alwaysOnTopButton.setOnClickListener {
             enterCorrectedCameraPip()
         }
@@ -119,7 +150,7 @@ class MainActivity : AppCompatActivity() {
     private fun configurePictureInPicture() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val builder = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(4, 3))
+                .setAspectRatio(Rational(1, 1))
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 builder.setAutoEnterEnabled(true)
@@ -135,7 +166,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 enterPictureInPictureMode(
                     PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(4, 3))
+                        .setAspectRatio(Rational(1, 1))
                         .build()
                 )
             } catch (e: Exception) {
@@ -173,6 +204,59 @@ class MainActivity : AppCompatActivity() {
 
         binding.statusText.visibility = visibility
         binding.controlsContainer.visibility = visibility
+        applyPipShape(isInPictureInPictureMode)
+    }
+
+    private fun toggleScreenRecording() {
+        if (ScreenCaptureService.isRecording) {
+            val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_STOP
+            }
+            startService(stopIntent)
+            binding.screenVideoButton.text = "⏺ Registra schermo completo"
+            return
+        }
+
+        val manager =
+            getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+        screenCaptureLauncher.launch(
+            manager.createScreenCaptureIntent()
+        )
+    }
+
+    private fun applyPipShape(inPip: Boolean) {
+        if (inPip) {
+            binding.rootContainer.setPadding(0, 0, 0, 0)
+            binding.processedImageView.outlineProvider =
+                object : ViewOutlineProvider() {
+                    override fun getOutline(
+                        view: android.view.View,
+                        outline: Outline
+                    ) {
+                        outline.setOval(
+                            0,
+                            0,
+                            view.width,
+                            view.height
+                        )
+                    }
+                }
+            binding.processedImageView.clipToOutline = true
+            binding.processedImageView.scaleType =
+                android.widget.ImageView.ScaleType.CENTER_CROP
+        } else {
+            val p = dp(12)
+            binding.rootContainer.setPadding(p, p, p, p)
+            binding.processedImageView.clipToOutline = false
+            binding.processedImageView.outlineProvider = null
+            binding.processedImageView.scaleType =
+                android.widget.ImageView.ScaleType.CENTER_CROP
+        }
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
     }
 
     private fun startCamera() {
