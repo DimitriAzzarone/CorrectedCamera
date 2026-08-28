@@ -231,7 +231,7 @@ public:
     STDMETHODIMP Run(REFERENCE_TIME)override{state=State_Running;return pin->Start();}
     STDMETHODIMP GetState(DWORD,FILTER_STATE*s)override{if(!s)return E_POINTER;*s=state;return S_OK;}
     STDMETHODIMP SetSyncSource(IReferenceClock*)override{return S_OK;} STDMETHODIMP GetSyncSource(IReferenceClock**c)override{if(!c)return E_POINTER;*c=nullptr;return S_OK;}
-    STDMETHODIMP EnumPins(IEnumPins**e)override{if(!e)return E_POINTER;*e=new EnumPins(pin);return S_OK;}
+    STDMETHODIMP EnumPins(IEnumPins**e)override{if(!e)return E_POINTER;*e=new ::EnumPins(pin);return S_OK;}
     STDMETHODIMP FindPin(LPCWSTR id,IPin**p)override{if(!p)return E_POINTER;*p=nullptr;if(id&&_wcsicmp(id,L"Capture")==0){pin->AddRef();*p=pin;return S_OK;}return VFW_E_NOT_FOUND;}
     STDMETHODIMP QueryFilterInfo(FILTER_INFO*i)override{if(!i)return E_POINTER;wcscpy_s(i->achName,name);i->pGraph=graph;if(graph)graph->AddRef();return S_OK;}
     STDMETHODIMP JoinFilterGraph(IFilterGraph*g,LPCWSTR n)override{if(graph)graph->Release();graph=g;if(graph)graph->AddRef();if(n)wcscpy_s(name,n);return S_OK;}
@@ -249,10 +249,10 @@ public:Factory(){g_objects++;}~Factory(){g_objects--;}
 };
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE h,DWORD r,LPVOID){if(r==DLL_PROCESS_ATTACH){g_module=h;DisableThreadLibraryCalls(h);}return TRUE;}
-extern "C" __declspec(dllexport) HRESULT __stdcall DllCanUnloadNow(){return g_objects==0&&g_locks==0?S_OK:S_FALSE;}
-extern "C" __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID c,REFIID r,void**p){if(c!=CLSID_CorrectedCamera)return CLASS_E_CLASSNOTAVAILABLE;auto*f=new Factory();HRESULT hr=f->QueryInterface(r,p);f->Release();return hr;}
+STDAPI DllCanUnloadNow(void){return g_objects==0&&g_locks==0?S_OK:S_FALSE;}
+STDAPI DllGetClassObject(REFCLSID c, REFIID r, LPVOID* p){if(c!=CLSID_CorrectedCamera)return CLASS_E_CLASSNOTAVAILABLE;auto*f=new Factory();HRESULT hr=f->QueryInterface(r,p);f->Release();return hr;}
 
-extern "C" __declspec(dllexport) HRESULT __stdcall DllRegisterServer(){
+STDAPI DllRegisterServer(void){
     wchar_t path[MAX_PATH]{};if(!GetModuleFileNameW(g_module,path,MAX_PATH))return HRESULT_FROM_WIN32(GetLastError());
     auto cls=GuidString(CLSID_CorrectedCamera);auto cat=GuidString(CLSID_VideoInputDeviceCategory);
     std::wstring base=L"Software\\Classes\\CLSID\\"+cls;
@@ -263,7 +263,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall DllRegisterServer(){
     hr=SetRegSz(HKEY_CURRENT_USER,inst,L"FriendlyName",L"CorrectedCamera Virtual Camera");if(FAILED(hr))return hr;
     hr=SetRegSz(HKEY_CURRENT_USER,inst,L"CLSID",cls);return hr;
 }
-extern "C" __declspec(dllexport) HRESULT __stdcall DllUnregisterServer(){
+STDAPI DllUnregisterServer(void){
     auto cls=GuidString(CLSID_CorrectedCamera);auto cat=GuidString(CLSID_VideoInputDeviceCategory);
     DeleteTree(HKEY_CURRENT_USER,L"Software\\Classes\\CLSID\\"+cls);
     DeleteTree(HKEY_CURRENT_USER,L"Software\\Classes\\CLSID\\"+cat+L"\\Instance\\"+cls);

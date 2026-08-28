@@ -1,0 +1,6 @@
+LIBRARY CorrectedCameraVirtualCam
+EXPORTS
+    DllCanUnloadNow
+    DllGetClassObject
+    DllRegisterServer
+    DllUnregisterServer
