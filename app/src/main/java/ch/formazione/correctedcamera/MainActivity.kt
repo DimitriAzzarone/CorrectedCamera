@@ -118,8 +118,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.switchCameraButton.setOnClickListener {
             if (activeRecording == null) {
-                useFrontCamera = !useFrontCamera
-                startCamera()
+                switchCameraSafely()
             }
         }
 
@@ -323,13 +322,71 @@ class MainActivity : AppCompatActivity() {
         return (value * resources.displayMetrics.density).toInt()
     }
 
-    private fun startCamera() {
-
+    private fun switchCameraSafely() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
 
         providerFuture.addListener({
-
             val provider = providerFuture.get()
+            val requestedFront = !useFrontCamera
+            val requestedSelector =
+                if (requestedFront) {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
+            if (!provider.hasCamera(requestedSelector)) {
+                Toast.makeText(
+                    this,
+                    if (requestedFront) {
+                        "Fotocamera frontale non disponibile"
+                    } else {
+                        "Fotocamera posteriore non disponibile"
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+                return@addListener
+            }
+
+            useFrontCamera = requestedFront
+            startCamera()
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun startCamera() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+
+        providerFuture.addListener({
+            val provider = providerFuture.get()
+
+            val selector =
+                if (useFrontCamera) {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
+            if (!provider.hasCamera(selector)) {
+                val fallbackSelector =
+                    if (useFrontCamera) {
+                        CameraSelector.DEFAULT_BACK_CAMERA
+                    } else {
+                        CameraSelector.DEFAULT_FRONT_CAMERA
+                    }
+
+                if (provider.hasCamera(fallbackSelector)) {
+                    useFrontCamera = !useFrontCamera
+                    Toast.makeText(
+                        this,
+                        "Camera richiesta non disponibile: uso l'altra fotocamera",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    startCamera()
+                } else {
+                    binding.statusText.text = "Nessuna fotocamera disponibile"
+                }
+                return@addListener
+            }
 
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(
@@ -357,17 +414,8 @@ class MainActivity : AppCompatActivity() {
 
             val capture = VideoCapture.withOutput(recorder)
             capture.targetRotation = rotationToSurface(userRotation.get())
-            videoCapture = capture
-
-            val selector =
-                if (useFrontCamera) {
-                    CameraSelector.DEFAULT_FRONT_CAMERA
-                } else {
-                    CameraSelector.DEFAULT_BACK_CAMERA
-                }
 
             try {
-
                 provider.unbindAll()
 
                 provider.bindToLifecycle(
@@ -377,12 +425,41 @@ class MainActivity : AppCompatActivity() {
                     capture
                 )
 
+                videoCapture = capture
                 updateStatus()
 
-            } catch (e: Exception) {
+            } catch (fullBindError: Exception) {
+                // Alcuni dispositivi non permettono ImageAnalysis + VideoCapture
+                // contemporaneamente sulla camera frontale. In quel caso
+                // manteniamo preview/stream/foto e disabilitiamo solo Video camera.
+                try {
+                    provider.unbindAll()
 
-                binding.statusText.text =
-                    "Errore camera: ${e.message}"
+                    provider.bindToLifecycle(
+                        this,
+                        selector,
+                        analysis
+                    )
+
+                    videoCapture = null
+                    binding.videoButton.isEnabled = false
+
+                    binding.statusText.text =
+                        if (useFrontCamera) {
+                            "Camera frontale attiva · video camera non supportato su questo dispositivo"
+                        } else {
+                            "Camera posteriore attiva · video camera non supportato su questo dispositivo"
+                        }
+
+                } catch (analysisOnlyError: Exception) {
+                    binding.videoButton.isEnabled = true
+                    binding.statusText.text =
+                        "Errore camera: ${analysisOnlyError.message}"
+                }
+            }
+
+            if (videoCapture != null) {
+                binding.videoButton.isEnabled = true
             }
 
         }, ContextCompat.getMainExecutor(this))
