@@ -7,6 +7,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Outline
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.view.ViewOutlineProvider
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -15,6 +16,7 @@ import android.graphics.Matrix
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Rational
 import android.view.Surface
 import android.view.Gravity
@@ -75,12 +77,25 @@ class MainActivity : AppCompatActivity() {
 
                 ContextCompat.startForegroundService(this, serviceIntent)
                 binding.screenVideoButton.text = "■ Ferma registrazione schermo"
-                enterCorrectedCameraPip()
+                requestOrStartFloatingOverlay()
             } else {
                 Toast.makeText(
                     this,
                     "Registrazione schermo annullata",
                     Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
+    private val overlayPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (Settings.canDrawOverlays(this)) {
+                startFloatingOverlay()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Serve il permesso 'Mostra sopra altre app'",
+                    Toast.LENGTH_LONG
                 ).show()
             }
         }
@@ -93,6 +108,23 @@ class MainActivity : AppCompatActivity() {
                 binding.statusText.text = "Permesso fotocamera negato"
             }
         }
+
+    override fun onResume() {
+        super.onResume()
+
+        if (FloatingCameraService.isRunning) {
+            stopService(Intent(this, FloatingCameraService::class.java))
+        }
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            startCamera()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.alwaysOnTopButton.setOnClickListener {
-            enterCorrectedCameraPip()
+            requestOrStartFloatingOverlay()
         }
 
         if (
@@ -273,6 +305,42 @@ class MainActivity : AppCompatActivity() {
         }
 
         applyPipShape(isInPictureInPictureMode)
+    }
+
+    private fun requestOrStartFloatingOverlay() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            !Settings.canDrawOverlays(this)
+        ) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            overlayPermissionLauncher.launch(intent)
+            return
+        }
+
+        startFloatingOverlay()
+    }
+
+    private fun startFloatingOverlay() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+
+        providerFuture.addListener({
+            try {
+                providerFuture.get().unbindAll()
+            } catch (_: Exception) {
+            }
+
+            val intent = Intent(this, FloatingCameraService::class.java).apply {
+                putExtra(FloatingCameraService.EXTRA_FRONT, useFrontCamera)
+                putExtra(FloatingCameraService.EXTRA_ROTATION, userRotation.get())
+                putExtra(FloatingCameraService.EXTRA_CIRCULAR, pipCircular)
+                putExtra(FloatingCameraService.EXTRA_SIZE_MODE, pipSizeMode)
+            }
+
+            ContextCompat.startForegroundService(this, intent)
+            moveTaskToBack(true)
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun toggleScreenRecording() {
