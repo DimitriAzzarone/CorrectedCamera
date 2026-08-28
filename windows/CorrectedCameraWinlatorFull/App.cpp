@@ -22,6 +22,11 @@
 #pragma comment(lib, "user32.lib")
 
 static HWND gWnd = nullptr;
+static HWND gOverlay = nullptr;
+static HINSTANCE gInst = nullptr;
+static bool gOverlayVisible = false;
+static bool gOverlayRound = true;
+static bool gOverlayLarge = false;
 static HWND gStatus = nullptr;
 static HBITMAP gPreview = nullptr;
 static std::mutex gPreviewMutex;
@@ -325,17 +330,134 @@ static void CloseSharedMemory() {
     if (gMap) { CloseHandle(gMap); gMap = nullptr; }
 }
 
+
+static void ApplyOverlayShapeAndSize() {
+    if (!gOverlay) return;
+
+    int w = 0, h = 0;
+    if (gOverlayRound) {
+        w = gOverlayLarge ? 420 : 220;
+        h = w;
+    } else {
+        w = gOverlayLarge ? 520 : 280;
+        h = gOverlayLarge ? 390 : 210;
+    }
+
+    SetWindowPos(
+        gOverlay,
+        HWND_TOPMOST,
+        0, 0, w, h,
+        SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+    );
+
+    if (gOverlayRound) {
+        HRGN rgn = CreateEllipticRgn(0, 0, w, h);
+        SetWindowRgn(gOverlay, rgn, TRUE);
+    } else {
+        SetWindowRgn(gOverlay, nullptr, TRUE);
+    }
+
+    InvalidateRect(gOverlay, nullptr, TRUE);
+}
+
+static void ToggleOverlay() {
+    if (!gOverlay) return;
+    gOverlayVisible = !gOverlayVisible;
+
+    if (gOverlayVisible) {
+        ApplyOverlayShapeAndSize();
+        ShowWindow(gOverlay, SW_SHOWNOACTIVATE);
+        SetWindowPos(
+            gOverlay, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        );
+    } else {
+        ShowWindow(gOverlay, SW_HIDE);
+    }
+}
+
+static void PaintCameraIntoRect(HDC dc, const RECT& box) {
+    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(dc, &box, black);
+    DeleteObject(black);
+
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    if (!gPreview) return;
+
+    HDC mem = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(mem, gPreview);
+
+    int bw = box.right - box.left;
+    int bh = box.bottom - box.top;
+
+    double scale = std::max((double)bw / kOutW, (double)bh / kOutH);
+    int dw = (int)std::lround(kOutW * scale);
+    int dh = (int)std::lround(kOutH * scale);
+    int dx = box.left + (bw - dw) / 2;
+    int dy = box.top + (bh - dh) / 2;
+
+    SetStretchBltMode(dc, HALFTONE);
+    StretchBlt(
+        dc, dx, dy, dw, dh,
+        mem, 0, 0, kOutW, kOutH,
+        SRCCOPY
+    );
+
+    SelectObject(mem, old);
+    DeleteDC(mem);
+}
+
+static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_NCHITTEST:
+        return HTCAPTION;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        PaintCameraIntoRect(dc, rc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_CLOSE:
+        gOverlayVisible = false;
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
+        CreateWindowW(L"STATIC", L"CORRECTED CAMERA", WS_CHILD|WS_VISIBLE,
+                      16, 12, 240, 26, hwnd, nullptr, nullptr, nullptr);
+
         CreateWindowW(L"BUTTON", L"Ruota sinistra", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
-                      12, 10, 130, 32, hwnd, (HMENU)101, nullptr, nullptr);
+                      16, 48, 140, 36, hwnd, (HMENU)101, nullptr, nullptr);
         CreateWindowW(L"BUTTON", L"Ruota destra", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
-                      152, 10, 130, 32, hwnd, (HMENU)102, nullptr, nullptr);
+                      164, 48, 140, 36, hwnd, (HMENU)102, nullptr, nullptr);
         CreateWindowW(L"BUTTON", L"Cambia camera", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
-                      292, 10, 130, 32, hwnd, (HMENU)103, nullptr, nullptr);
+                      312, 48, 140, 36, hwnd, (HMENU)103, nullptr, nullptr);
+
+        CreateWindowW(L"BUTTON", L"Forma: tondo", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+                      460, 48, 140, 36, hwnd, (HMENU)105, nullptr, nullptr);
+        CreateWindowW(L"BUTTON", L"Dimensione: piccola", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+                      608, 48, 170, 36, hwnd, (HMENU)106, nullptr, nullptr);
+
+        CreateWindowW(L"BUTTON", L"Mostra in primo piano", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+                      16, 92, 230, 38, hwnd, (HMENU)107, nullptr, nullptr);
+
         gStatus = CreateWindowW(L"STATIC", L"Avvio...", WS_CHILD|WS_VISIBLE,
-                               12, 52, 720, 24, hwnd, nullptr, nullptr, nullptr);
+                               260, 99, 518, 24, hwnd, nullptr, nullptr, nullptr);
+
         PostMessageW(hwnd, WM_COMMAND, 104, 0);
         return 0;
 
@@ -353,19 +475,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (count > 0) StartCamera((gCameraIndex + 1) % count);
         } else if (LOWORD(wp) == 104) {
             StartCamera(gCameraIndex);
+        } else if (LOWORD(wp) == 105) {
+            gOverlayRound = !gOverlayRound;
+            if (lp) SetWindowTextW((HWND)lp, gOverlayRound ? L"Forma: tondo" : L"Forma: quadrato");
+            if (gOverlayVisible) ApplyOverlayShapeAndSize();
+        } else if (LOWORD(wp) == 106) {
+            gOverlayLarge = !gOverlayLarge;
+            if (lp) SetWindowTextW((HWND)lp, gOverlayLarge ? L"Dimensione: grande" : L"Dimensione: piccola");
+            if (gOverlayVisible) ApplyOverlayShapeAndSize();
+        } else if (LOWORD(wp) == 107) {
+            ToggleOverlay();
+            if (lp) SetWindowTextW((HWND)lp, gOverlayVisible ? L"Nascondi primo piano" : L"Mostra in primo piano");
         }
         return 0;
 
     case WM_FRAME:
         InvalidateRect(hwnd, nullptr, FALSE);
+        if (gOverlay && gOverlayVisible)
+            InvalidateRect(gOverlay, nullptr, FALSE);
         return 0;
 
     case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rc{}; GetClientRect(hwnd, &rc);
-        RECT box{12, 86, rc.right-12, rc.bottom-12};
-        FillRect(dc, &box, (HBRUSH)(COLOR_WINDOW+1));
+        RECT box{16, 142, rc.right-16, rc.bottom-16};
+        HBRUSH panelBrush = CreateSolidBrush(RGB(20, 25, 30));
+        FillRect(dc, &box, panelBrush);
+        DeleteObject(panelBrush);
 
         std::lock_guard<std::mutex> lock(gPreviewMutex);
         if (gPreview) {
@@ -399,19 +536,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     InitSharedMemory();
+    gInst = hi;
+
+    WNDCLASSW overlayClass{};
+    overlayClass.lpfnWndProc = OverlayProc;
+    overlayClass.hInstance = hi;
+    overlayClass.lpszClassName = L"CorrectedCameraFloatingOverlay";
+    overlayClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    overlayClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RegisterClassW(&overlayClass);
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hi;
     wc.lpszClassName = L"CorrectedCameraWinlatorFull";
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+    wc.hbrBackground = CreateSolidBrush(RGB(16, 20, 24));
     RegisterClassW(&wc);
 
     gWnd = CreateWindowW(wc.lpszClassName, L"CorrectedCamera - Winlator",
                          WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                          800, 650, nullptr, nullptr, hi, nullptr);
     if (!gWnd) return 1;
+
+    gOverlay = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        overlayClass.lpszClassName,
+        L"CorrectedCamera Overlay",
+        WS_POPUP,
+        40, 40, 220, 220,
+        nullptr, nullptr, hi, nullptr
+    );
+    if (gOverlay) {
+        ApplyOverlayShapeAndSize();
+        ShowWindow(gOverlay, SW_HIDE);
+    }
+
     ShowWindow(gWnd, show);
     UpdateWindow(gWnd);
 
