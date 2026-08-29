@@ -2,9 +2,7 @@ package ch.formazione.correctedcamera
 
 object CameraStreamHub {
     private val server = MjpegServer(8080)
-
-    @Volatile
-    private var started = false
+    @Volatile private var started = false
 
     @Synchronized
     fun start() {
