@@ -65,6 +65,8 @@ class FloatingCameraService : Service(), LifecycleOwner {
     private var circular = true
     private var sizeMode = 1
     private var showOverlay = true
+    private var lastStreamFrameAt = 0L
+    private var lastOverlayFrameAt = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -78,7 +80,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
             NotificationCompat.Builder(this, "corrected_camera_overlay")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setContentTitle("Corrected Camera")
-                .setContentText("Fotocamera in primo piano attiva")
+                .setContentText("Trasmissione camera attiva")
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build()
@@ -300,28 +302,41 @@ class FloatingCameraService : Service(), LifecycleOwner {
                     )
                 }
 
-            val jpeg =
-                ByteArrayOutputStream().use { output ->
-                    transformed.compress(
-                        Bitmap.CompressFormat.JPEG,
-                        90,
-                        output
-                    )
-                    output.toByteArray()
+            val now = android.os.SystemClock.elapsedRealtime()
+
+            if (now - lastStreamFrameAt >= 80L) {
+                lastStreamFrameAt = now
+
+                val streamBitmap = scaleForStream(transformed)
+
+                val jpeg =
+                    ByteArrayOutputStream().use { output ->
+                        streamBitmap.compress(
+                            Bitmap.CompressFormat.JPEG,
+                            76,
+                            output
+                        )
+                        output.toByteArray()
+                    }
+
+                if (streamBitmap !== transformed) {
+                    streamBitmap.recycle()
                 }
 
-            CameraStreamHub.updateFrame(jpeg)
+                CameraStreamHub.updateFrame(jpeg)
+            }
 
             preview =
-                if (showOverlay) {
-                    transformed.copy(Bitmap.Config.ARGB_8888, false)
+                if (showOverlay && now - lastOverlayFrameAt >= 80L) {
+                    lastOverlayFrameAt = now
+                    scaleForOverlay(transformed)
                 } else {
                     null
                 }
 
             val frameToShow = preview
 
-            if (showOverlay) mainHandler.post {
+            if (frameToShow != null) mainHandler.post {
                 val iv = imageView
                 if (iv != null && frameToShow != null) {
                     val old = iv.drawable
@@ -337,7 +352,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
                 }
             }
 
-            if (showOverlay) {
+            if (frameToShow != null) {
                 preview = null
             }
         } finally {
@@ -346,6 +361,36 @@ class FloatingCameraService : Service(), LifecycleOwner {
             cropped?.recycle()
             image.close()
         }
+    }
+
+    private fun scaleForStream(source: Bitmap): Bitmap {
+        val maxSide = 720
+        val largest = maxOf(source.width, source.height)
+
+        if (largest <= maxSide) {
+            return source
+        }
+
+        val scale = maxSide.toFloat() / largest.toFloat()
+        val width = maxOf(1, (source.width * scale).toInt())
+        val height = maxOf(1, (source.height * scale).toInt())
+
+        return Bitmap.createScaledBitmap(source, width, height, true)
+    }
+
+    private fun scaleForOverlay(source: Bitmap): Bitmap {
+        val maxSide = 420
+        val largest = maxOf(source.width, source.height)
+
+        if (largest <= maxSide) {
+            return source.copy(Bitmap.Config.ARGB_8888, false)
+        }
+
+        val scale = maxSide.toFloat() / largest.toFloat()
+        val width = maxOf(1, (source.width * scale).toInt())
+        val height = maxOf(1, (source.height * scale).toInt())
+
+        return Bitmap.createScaledBitmap(source, width, height, true)
     }
 
     private fun returnToApp() {

@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var useFrontCamera = false
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
+    private var lastMainStreamFrameAt = 0L
 
     private var pipCircular = true
     private var pipSizeMode = 1 // 0=piccola, 1=media, 2=grande
@@ -665,20 +666,46 @@ class MainActivity : AppCompatActivity() {
                 binding.processedImageView.setImageBitmap(previewBitmap)
             }
 
-            val jpeg =
-                ByteArrayOutputStream().use { output ->
+            val now = android.os.SystemClock.elapsedRealtime()
 
-                    transformed.compress(
-                        Bitmap.CompressFormat.JPEG,
-                        92,
-                        output
-                    )
+            if (now - lastMainStreamFrameAt >= 80L) {
+                lastMainStreamFrameAt = now
 
-                    output.toByteArray()
+                val streamBitmap =
+                    if (maxOf(transformed.width, transformed.height) > 720) {
+                        val scale =
+                            720f / maxOf(
+                                transformed.width,
+                                transformed.height
+                            ).toFloat()
+
+                        Bitmap.createScaledBitmap(
+                            transformed,
+                            maxOf(1, (transformed.width * scale).toInt()),
+                            maxOf(1, (transformed.height * scale).toInt()),
+                            true
+                        )
+                    } else {
+                        transformed
+                    }
+
+                val jpeg =
+                    ByteArrayOutputStream().use { output ->
+                        streamBitmap.compress(
+                            Bitmap.CompressFormat.JPEG,
+                            76,
+                            output
+                        )
+                        output.toByteArray()
+                    }
+
+                if (streamBitmap !== transformed) {
+                    streamBitmap.recycle()
                 }
 
-            latestCorrectedJpeg.set(jpeg)
-            CameraStreamHub.updateFrame(jpeg)
+                latestCorrectedJpeg.set(jpeg)
+                CameraStreamHub.updateFrame(jpeg)
+            }
 
         } catch (e: Exception) {
 
