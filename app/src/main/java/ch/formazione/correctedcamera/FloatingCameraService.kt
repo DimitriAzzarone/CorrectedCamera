@@ -30,6 +30,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
@@ -40,6 +41,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
         const val EXTRA_ROTATION = "rotation"
         const val EXTRA_CIRCULAR = "circular"
         const val EXTRA_SIZE_MODE = "size_mode"
+        const val EXTRA_SHOW_OVERLAY = "show_overlay"
 
         @Volatile
         var isRunning = false
@@ -62,6 +64,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
     private var requestedRotation = 0
     private var circular = true
     private var sizeMode = 1
+    private var showOverlay = true
 
     override fun onCreate() {
         super.onCreate()
@@ -87,14 +90,20 @@ class FloatingCameraService : Service(), LifecycleOwner {
         requestedRotation = intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0
         circular = intent?.getBooleanExtra(EXTRA_CIRCULAR, true) ?: true
         sizeMode = intent?.getIntExtra(EXTRA_SIZE_MODE, 1) ?: 1
+        showOverlay = intent?.getBooleanExtra(EXTRA_SHOW_OVERLAY, true) ?: true
 
-        if (!Settings.canDrawOverlays(this)) {
+        if (showOverlay && !Settings.canDrawOverlays(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (overlayRoot == null) {
+        CameraStreamHub.start()
+
+        if (showOverlay && overlayRoot == null) {
             createOverlay()
+        }
+
+        if (cameraProvider == null) {
             startCamera()
         }
 
@@ -272,10 +281,28 @@ class FloatingCameraService : Service(), LifecycleOwner {
                     )
                 }
 
-            preview = transformed.copy(Bitmap.Config.ARGB_8888, false)
+            val jpeg =
+                ByteArrayOutputStream().use { output ->
+                    transformed.compress(
+                        Bitmap.CompressFormat.JPEG,
+                        90,
+                        output
+                    )
+                    output.toByteArray()
+                }
+
+            CameraStreamHub.updateFrame(jpeg)
+
+            preview =
+                if (showOverlay) {
+                    transformed.copy(Bitmap.Config.ARGB_8888, false)
+                } else {
+                    null
+                }
+
             val frameToShow = preview
 
-            mainHandler.post {
+            if (showOverlay) mainHandler.post {
                 val iv = imageView
                 if (iv != null && frameToShow != null) {
                     val old = iv.drawable
@@ -290,7 +317,10 @@ class FloatingCameraService : Service(), LifecycleOwner {
                     frameToShow?.recycle()
                 }
             }
-            preview = null
+
+            if (showOverlay) {
+                preview = null
+            }
         } finally {
             preview?.recycle()
             transformed?.recycle()

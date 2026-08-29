@@ -52,7 +52,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
     private val cameraExecutor = Executors.newSingleThreadExecutor()
-    private val streamServer = MjpegServer(8080)
 
     private val userRotation = AtomicInteger(0)
     private val latestCorrectedJpeg = AtomicReference<ByteArray?>(null)
@@ -132,7 +131,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        streamServer.start()
+        CameraStreamHub.start()
         configurePictureInPicture()
 
         binding.rotateLeftButton.setOnClickListener {
@@ -237,7 +236,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setAutoEnterEnabled(true)
+                builder.setAutoEnterEnabled(false)
                 builder.setSeamlessResizeEnabled(true)
             }
 
@@ -275,11 +274,8 @@ class MainActivity : AppCompatActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
 
-        if (
-            Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S &&
-            !isInPictureInPictureMode
-        ) {
-            enterCorrectedCameraPip()
+        if (!FloatingCameraService.isRunning) {
+            startBackgroundCameraService(showOverlay = false)
         }
     }
 
@@ -323,6 +319,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startFloatingOverlay() {
+        startBackgroundCameraService(showOverlay = true)
+        moveTaskToBack(true)
+    }
+
+    private fun startBackgroundCameraService(showOverlay: Boolean) {
         val providerFuture = ProcessCameraProvider.getInstance(this)
 
         providerFuture.addListener({
@@ -336,10 +337,10 @@ class MainActivity : AppCompatActivity() {
                 putExtra(FloatingCameraService.EXTRA_ROTATION, userRotation.get())
                 putExtra(FloatingCameraService.EXTRA_CIRCULAR, pipCircular)
                 putExtra(FloatingCameraService.EXTRA_SIZE_MODE, pipSizeMode)
+                putExtra(FloatingCameraService.EXTRA_SHOW_OVERLAY, showOverlay)
             }
 
             ContextCompat.startForegroundService(this, intent)
-            moveTaskToBack(true)
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -676,7 +677,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
             latestCorrectedJpeg.set(jpeg)
-            streamServer.updateFrame(jpeg)
+            CameraStreamHub.updateFrame(jpeg)
 
         } catch (e: Exception) {
 
@@ -979,7 +980,6 @@ class MainActivity : AppCompatActivity() {
         activeRecording?.stop()
         activeRecording = null
 
-        streamServer.stop()
         cameraExecutor.shutdown()
 
         super.onDestroy()
