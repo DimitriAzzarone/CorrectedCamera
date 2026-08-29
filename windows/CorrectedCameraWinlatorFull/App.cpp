@@ -4,6 +4,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <objidl.h>
+#include <ole2.h>
 #include <gdiplus.h>
 #include <dshow.h>
 #include <strsafe.h>
