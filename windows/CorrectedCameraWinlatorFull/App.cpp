@@ -372,7 +372,10 @@ static bool DecodeJpegToFrame(const BYTE* data, size_t size, std::vector<BYTE>& 
 
     Gdiplus::Graphics graphics(&canvas);
     graphics.Clear(Gdiplus::Color(255, 0, 0, 0));
-    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighSpeed);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighSpeed);
 
     const double sx = (double)kOutW / image->GetWidth();
     const double sy = (double)kOutH / image->GetHeight();
@@ -459,6 +462,24 @@ static void AndroidStreamWorker(std::string host) {
             sizeof(timeoutMs)
         );
 
+        BOOL noDelay = TRUE;
+        setsockopt(
+            sock,
+            IPPROTO_TCP,
+            TCP_NODELAY,
+            reinterpret_cast<const char*>(&noDelay),
+            sizeof(noDelay)
+        );
+
+        int recvBufferBytes = 256 * 1024;
+        setsockopt(
+            sock,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            reinterpret_cast<const char*>(&recvBufferBytes),
+            sizeof(recvBufferBytes)
+        );
+
         if (connect(sock, p->ai_addr, (int)p->ai_addrlen) == 0)
             break;
 
@@ -490,12 +511,12 @@ static void AndroidStreamWorker(std::string host) {
     }
 
     WriteStatus(
-        L"Android collegato | MJPEG -> CorrectedCamera Virtual Camera"
+        L"Android collegato | bassa latenza | Virtual Camera attiva"
     );
 
     std::vector<BYTE> buffer;
     buffer.reserve(1024 * 1024);
-    BYTE chunk[16384];
+    BYTE chunk[65536];
 
     const BYTE soi[] = {0xFF, 0xD8};
     const BYTE eoi[] = {0xFF, 0xD9};
@@ -513,41 +534,58 @@ static void AndroidStreamWorker(std::string host) {
 
         buffer.insert(buffer.end(), chunk, chunk + n);
 
+        // Low-latency mode: decode only the newest complete JPEG currently
+        // available. Old complete frames are discarded instead of queued.
+        auto lastBegin = buffer.end();
+        auto lastEnd = buffer.end();
+        auto scan = buffer.begin();
+
         while (true) {
             auto begin = std::search(
-                buffer.begin(), buffer.end(),
+                scan, buffer.end(),
                 std::begin(soi), std::end(soi)
             );
 
-            if (begin == buffer.end()) {
-                if (buffer.size() > 2 * 1024 * 1024)
-                    buffer.clear();
+            if (begin == buffer.end())
                 break;
-            }
 
             auto end = std::search(
                 begin + 2, buffer.end(),
                 std::begin(eoi), std::end(eoi)
             );
 
-            if (end == buffer.end()) {
-                if (begin != buffer.begin())
-                    buffer.erase(buffer.begin(), begin);
+            if (end == buffer.end())
                 break;
-            }
 
-            end += 2;
+            lastBegin = begin;
+            lastEnd = end + 2;
+            scan = lastEnd;
+        }
 
+        if (lastBegin != buffer.end() && lastEnd != buffer.end()) {
             std::vector<BYTE> frame;
+
             if (DecodeJpegToFrame(
-                    &(*begin),
-                    (size_t)(end - begin),
+                    &(*lastBegin),
+                    (size_t)(lastEnd - lastBegin),
                     frame
                 )) {
                 PublishFrame(frame);
             }
 
-            buffer.erase(buffer.begin(), end);
+            buffer.erase(buffer.begin(), lastEnd);
+        } else {
+            auto begin = std::search(
+                buffer.begin(), buffer.end(),
+                std::begin(soi), std::end(soi)
+            );
+
+            if (begin != buffer.end() && begin != buffer.begin()) {
+                buffer.erase(buffer.begin(), begin);
+            } else if (begin == buffer.end() &&
+                       buffer.size() > 256 * 1024) {
+                buffer.clear();
+            }
         }
     }
 
