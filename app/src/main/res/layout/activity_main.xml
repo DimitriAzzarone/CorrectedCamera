@@ -136,5 +136,13 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="◉ Sempre in primo piano"/>
+
+        <Button
+            android:id="@+id/hideOverlayButton"
+            style="@style/CorrectedCameraButton.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Nascondi"/>
     </LinearLayout>
 </LinearLayout>

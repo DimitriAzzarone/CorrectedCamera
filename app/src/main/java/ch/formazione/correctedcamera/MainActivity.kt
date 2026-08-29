@@ -180,6 +180,11 @@ class MainActivity : AppCompatActivity() {
             requestOrStartFloatingOverlay()
         }
 
+        binding.hideOverlayButton.setOnClickListener {
+            startBackgroundCameraService(showOverlay = false)
+            moveTaskToBack(true)
+        }
+
         if (
             ContextCompat.checkSelfPermission(
                 this,
@@ -273,10 +278,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-
-        if (!FloatingCameraService.isRunning) {
-            startBackgroundCameraService(showOverlay = false)
-        }
     }
 
     override fun onPictureInPictureModeChanged(

@@ -99,8 +99,12 @@ class FloatingCameraService : Service(), LifecycleOwner {
 
         CameraStreamHub.start()
 
-        if (showOverlay && overlayRoot == null) {
-            createOverlay()
+        if (showOverlay) {
+            if (overlayRoot == null) {
+                createOverlay()
+            }
+        } else {
+            removeOverlay()
         }
 
         if (cameraProvider == null) {
@@ -108,6 +112,21 @@ class FloatingCameraService : Service(), LifecycleOwner {
         }
 
         return START_STICKY
+    }
+
+    private fun removeOverlay() {
+        val root = overlayRoot ?: return
+
+        try {
+            if (::windowManager.isInitialized) {
+                windowManager.removeView(root)
+            }
+        } catch (_: Exception) {
+        }
+
+        imageView?.setImageDrawable(null)
+        imageView = null
+        overlayRoot = null
     }
 
     private fun createOverlay() {
@@ -342,14 +361,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
 
     override fun onDestroy() {
         cameraProvider?.unbindAll()
-        overlayRoot?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {}
-        }
-        imageView?.setImageDrawable(null)
-        overlayRoot = null
-        imageView = null
+        removeOverlay()
         cameraExecutor.shutdownNow()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         isRunning = false
