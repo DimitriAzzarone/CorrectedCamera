@@ -612,7 +612,7 @@ static void ApplyOverlayShapeAndSize() {
         gOverlay,
         HWND_TOPMOST,
         0, 0, w, h,
-        SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        SWP_NOMOVE | SWP_NOACTIVATE
     );
 
     if (gOverlayRound) {
@@ -625,20 +625,21 @@ static void ApplyOverlayShapeAndSize() {
     InvalidateRect(gOverlay, nullptr, TRUE);
 }
 
-static void ToggleOverlay() {
+static void ShowOverlay() {
     if (!gOverlay) return;
-    gOverlayVisible = !gOverlayVisible;
+    gOverlayVisible = true;
+    ApplyOverlayShapeAndSize();
+    ShowWindow(gOverlay, SW_SHOWNOACTIVATE);
+    SetWindowPos(
+        gOverlay, HWND_TOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    );
+}
 
-    if (gOverlayVisible) {
-        ApplyOverlayShapeAndSize();
-        ShowWindow(gOverlay, SW_SHOWNOACTIVATE);
-        SetWindowPos(
-            gOverlay, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-        );
-    } else {
-        ShowWindow(gOverlay, SW_HIDE);
-    }
+static void HideOverlay() {
+    if (!gOverlay) return;
+    gOverlayVisible = false;
+    ShowWindow(gOverlay, SW_HIDE);
 }
 
 static void PaintCameraIntoRect(HDC dc, const RECT& box) {
@@ -717,8 +718,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         CreateWindowW(L"BUTTON", L"Dimensione: piccola", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
                       608, 48, 170, 36, hwnd, (HMENU)106, nullptr, nullptr);
 
-        CreateWindowW(L"BUTTON", L"Mostra in primo piano", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+        CreateWindowW(L"BUTTON", L"Sempre in primo piano", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
                       16, 92, 210, 38, hwnd, (HMENU)107, nullptr, nullptr);
+
+        CreateWindowW(L"BUTTON", L"Nascondi", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+                      16, 136, 210, 38, hwnd, (HMENU)110, nullptr, nullptr);
 
         CreateWindowW(L"STATIC", L"IP Android:", WS_CHILD|WS_VISIBLE,
                       238, 100, 85, 24, hwnd, nullptr, nullptr, nullptr);
@@ -739,7 +743,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             L"STATIC",
             L"Apri CorrectedCamera Android, poi premi Connetti Android",
             WS_CHILD|WS_VISIBLE,
-            16, 136, 762, 24,
+            238, 142, 540, 24,
             hwnd, nullptr, nullptr, nullptr
         );
 
@@ -763,10 +767,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (lp) SetWindowTextW((HWND)lp, gOverlayLarge ? L"Dimensione: grande" : L"Dimensione: piccola");
             if (gOverlayVisible) ApplyOverlayShapeAndSize();
         } else if (LOWORD(wp) == 107) {
-            ToggleOverlay();
-            if (lp) SetWindowTextW((HWND)lp, gOverlayVisible ? L"Nascondi primo piano" : L"Mostra in primo piano");
+            ShowOverlay();
         } else if (LOWORD(wp) == 109) {
             StartAndroidStream();
+        } else if (LOWORD(wp) == 110) {
+            HideOverlay();
         }
         return 0;
 
@@ -780,7 +785,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rc{}; GetClientRect(hwnd, &rc);
-        RECT box{16, 174, rc.right-16, rc.bottom-16};
+        RECT box{16, 190, rc.right-16, rc.bottom-16};
         HBRUSH panelBrush = CreateSolidBrush(RGB(20, 25, 30));
         FillRect(dc, &box, panelBrush);
         DeleteObject(panelBrush);
