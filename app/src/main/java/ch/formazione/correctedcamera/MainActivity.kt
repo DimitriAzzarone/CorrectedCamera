@@ -668,13 +668,13 @@ class MainActivity : AppCompatActivity() {
 
             val now = android.os.SystemClock.elapsedRealtime()
 
-            if (now - lastMainStreamFrameAt >= 80L) {
+            if (now - lastMainStreamFrameAt >= 50L) {
                 lastMainStreamFrameAt = now
 
                 val streamBitmap =
-                    if (maxOf(transformed.width, transformed.height) > 720) {
+                    if (maxOf(transformed.width, transformed.height) > 640) {
                         val scale =
-                            720f / maxOf(
+                            640f / maxOf(
                                 transformed.width,
                                 transformed.height
                             ).toFloat()
@@ -693,7 +693,7 @@ class MainActivity : AppCompatActivity() {
                     ByteArrayOutputStream().use { output ->
                         streamBitmap.compress(
                             Bitmap.CompressFormat.JPEG,
-                            76,
+                            64,
                             output
                         )
                         output.toByteArray()

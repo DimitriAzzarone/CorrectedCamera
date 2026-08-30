@@ -61,7 +61,7 @@ static AM_MEDIA_TYPE* MakeType() {
     if (!mt->pbFormat) { CoTaskMemFree(mt); return nullptr; }
     ZeroMemory(mt->pbFormat, mt->cbFormat);
     auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(mt->pbFormat);
-    vih->AvgTimePerFrame = 333333;
+    vih->AvgTimePerFrame = 500000;
     vih->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     vih->bmiHeader.biWidth = kOutW;
     vih->bmiHeader.biHeight = kOutH; // bottom-up for DirectShow RGB24
@@ -138,12 +138,12 @@ public:
                         for(int y=0;y<kOutH;++y)
                             memcpy(p+(kOutH-1-y)*kOutStride, tmp.data()+y*kOutStride, kOutStride);
                         s->SetActualDataLength(kPixelBytes);
-                        REFERENCE_TIME a=t,b=t+333333;s->SetTime(&a,&b);s->SetSyncPoint(TRUE);
+                        REFERENCE_TIME a=t,b=t+500000;s->SetTime(&a,&b);s->SetSyncPoint(TRUE);
                         mem->Receive(s);t=b;
                     }
                     s->Release();
                 }
-                Sleep(33);
+                Sleep(50);
             }
             if(sh)UnmapViewOfFile(sh);if(map)CloseHandle(map);
         });
@@ -198,7 +198,7 @@ public:
         if(i!=0)return S_FALSE;if(!mt||!caps)return E_POINTER;*mt=MakeType();if(!*mt)return E_OUTOFMEMORY;
         auto*c=(VIDEO_STREAM_CONFIG_CAPS*)caps;ZeroMemory(c,sizeof(*c));c->guid=FORMAT_VideoInfo;
         c->InputSize={kOutW,kOutH};c->MinOutputSize=c->MaxOutputSize=c->InputSize;
-        c->MinFrameInterval=c->MaxFrameInterval=333333;c->MinBitsPerSecond=c->MaxBitsPerSecond=kOutW*kOutH*24*30;return S_OK;
+        c->MinFrameInterval=c->MaxFrameInterval=500000;c->MinBitsPerSecond=c->MaxBitsPerSecond=kOutW*kOutH*24*20;return S_OK;
     }
     STDMETHODIMP Set(REFGUID,DWORD,LPVOID,DWORD,LPVOID,DWORD)override{return E_NOTIMPL;}
     STDMETHODIMP Get(REFGUID g,DWORD id,LPVOID,DWORD,LPVOID data,DWORD cb,DWORD*ret)override{

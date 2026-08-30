@@ -304,7 +304,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
 
             val now = android.os.SystemClock.elapsedRealtime()
 
-            if (now - lastStreamFrameAt >= 80L) {
+            if (now - lastStreamFrameAt >= 50L) {
                 lastStreamFrameAt = now
 
                 val streamBitmap = scaleForStream(transformed)
@@ -313,7 +313,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
                     ByteArrayOutputStream().use { output ->
                         streamBitmap.compress(
                             Bitmap.CompressFormat.JPEG,
-                            76,
+                            64,
                             output
                         )
                         output.toByteArray()
@@ -327,7 +327,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
             }
 
             preview =
-                if (showOverlay && now - lastOverlayFrameAt >= 80L) {
+                if (showOverlay && now - lastOverlayFrameAt >= 66L) {
                     lastOverlayFrameAt = now
                     scaleForOverlay(transformed)
                 } else {
@@ -364,7 +364,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
     }
 
     private fun scaleForStream(source: Bitmap): Bitmap {
-        val maxSide = 720
+        val maxSide = 640
         val largest = maxOf(source.width, source.height)
 
         if (largest <= maxSide) {
