@@ -672,9 +672,9 @@ class MainActivity : AppCompatActivity() {
                 lastMainStreamFrameAt = now
 
                 val streamBitmap =
-                    if (maxOf(transformed.width, transformed.height) > 640) {
+                    if (maxOf(transformed.width, transformed.height) > 480) {
                         val scale =
-                            640f / maxOf(
+                            480f / maxOf(
                                 transformed.width,
                                 transformed.height
                             ).toFloat()
@@ -693,7 +693,7 @@ class MainActivity : AppCompatActivity() {
                     ByteArrayOutputStream().use { output ->
                         streamBitmap.compress(
                             Bitmap.CompressFormat.JPEG,
-                            64,
+                            55,
                             output
                         )
                         output.toByteArray()

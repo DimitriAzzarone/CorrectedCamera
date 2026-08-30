@@ -313,7 +313,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
                     ByteArrayOutputStream().use { output ->
                         streamBitmap.compress(
                             Bitmap.CompressFormat.JPEG,
-                            64,
+                            55,
                             output
                         )
                         output.toByteArray()
@@ -364,7 +364,7 @@ class FloatingCameraService : Service(), LifecycleOwner {
     }
 
     private fun scaleForStream(source: Bitmap): Bitmap {
-        val maxSide = 640
+        val maxSide = 480
         val largest = maxOf(source.width, source.height)
 
         if (largest <= maxSide) {
