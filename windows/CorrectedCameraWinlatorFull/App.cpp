@@ -16,6 +16,8 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
+#include <chrono>
 #include <memory>
 
 #include "SampleGrabberCompat.h"
@@ -460,32 +462,17 @@ static void AndroidStreamWorker(std::string host) {
         sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
 
-        DWORD timeoutMs = 2500;
-        setsockopt(
-            sock,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&timeoutMs),
-            sizeof(timeoutMs)
-        );
+        DWORD timeoutMs = 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
 
         BOOL noDelay = TRUE;
-        setsockopt(
-            sock,
-            IPPROTO_TCP,
-            TCP_NODELAY,
-            reinterpret_cast<const char*>(&noDelay),
-            sizeof(noDelay)
-        );
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+            reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
 
-        int recvBufferBytes = 256 * 1024;
-        setsockopt(
-            sock,
-            SOL_SOCKET,
-            SO_RCVBUF,
-            reinterpret_cast<const char*>(&recvBufferBytes),
-            sizeof(recvBufferBytes)
-        );
+        int recvBufferBytes = 32 * 1024;
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+            reinterpret_cast<const char*>(&recvBufferBytes), sizeof(recvBufferBytes));
 
         if (connect(sock, p->ai_addr, (int)p->ai_addrlen) == 0)
             break;
@@ -497,9 +484,7 @@ static void AndroidStreamWorker(std::string host) {
     freeaddrinfo(result);
 
     if (sock == INVALID_SOCKET) {
-        WriteStatus(
-            L"Connessione Android fallita. Prova l'IP mostrato nell'app Android."
-        );
+        WriteStatus(L"Connessione Android fallita. Prova l'IP mostrato nell'app Android.");
         return;
     }
 
@@ -517,12 +502,54 @@ static void AndroidStreamWorker(std::string host) {
         return;
     }
 
-    WriteStatus(
-        L"Android collegato | FAST | Virtual Camera prioritaria"
-    );
+    WriteStatus(L"Android collegato | LIVE | decoder separato");
+
+    std::mutex latestMutex;
+    std::condition_variable latestCv;
+    std::vector<BYTE> latestJpeg;
+    uint64_t latestSeq = 0;
+    bool receiverDone = false;
+
+    std::thread decoder([&] {
+        uint64_t decodedSeq = 0;
+
+        while (!gStreamStop.load()) {
+            std::vector<BYTE> jpeg;
+
+            {
+                std::unique_lock<std::mutex> lock(latestMutex);
+                latestCv.wait_for(
+                    lock,
+                    std::chrono::milliseconds(100),
+                    [&] {
+                        return gStreamStop.load() ||
+                               receiverDone ||
+                               latestSeq != decodedSeq;
+                    }
+                );
+
+                if (gStreamStop.load())
+                    break;
+
+                if (latestSeq == decodedSeq) {
+                    if (receiverDone) break;
+                    continue;
+                }
+
+                jpeg = latestJpeg;
+                decodedSeq = latestSeq;
+            }
+
+            std::vector<BYTE> frame;
+            if (!jpeg.empty() &&
+                DecodeJpegToFrame(jpeg.data(), jpeg.size(), frame)) {
+                PublishFrame(frame);
+            }
+        }
+    });
 
     std::vector<BYTE> buffer;
-    buffer.reserve(1024 * 1024);
+    buffer.reserve(256 * 1024);
     BYTE chunk[65536];
 
     const BYTE soi[] = {0xFF, 0xD8};
@@ -541,8 +568,6 @@ static void AndroidStreamWorker(std::string host) {
 
         buffer.insert(buffer.end(), chunk, chunk + n);
 
-        // Low-latency mode: decode only the newest complete JPEG currently
-        // available. Old complete frames are discarded instead of queued.
         auto lastBegin = buffer.end();
         auto lastEnd = buffer.end();
         auto scan = buffer.begin();
@@ -556,30 +581,26 @@ static void AndroidStreamWorker(std::string host) {
             if (begin == buffer.end())
                 break;
 
-            auto end = std::search(
+            auto endJpeg = std::search(
                 begin + 2, buffer.end(),
                 std::begin(eoi), std::end(eoi)
             );
 
-            if (end == buffer.end())
+            if (endJpeg == buffer.end())
                 break;
 
             lastBegin = begin;
-            lastEnd = end + 2;
+            lastEnd = endJpeg + 2;
             scan = lastEnd;
         }
 
         if (lastBegin != buffer.end() && lastEnd != buffer.end()) {
-            std::vector<BYTE> frame;
-
-            if (DecodeJpegToFrame(
-                    &(*lastBegin),
-                    (size_t)(lastEnd - lastBegin),
-                    frame
-                )) {
-                PublishFrame(frame);
+            {
+                std::lock_guard<std::mutex> lock(latestMutex);
+                latestJpeg.assign(lastBegin, lastEnd);
+                ++latestSeq;
             }
-
+            latestCv.notify_one();
             buffer.erase(buffer.begin(), lastEnd);
         } else {
             auto begin = std::search(
@@ -589,12 +610,20 @@ static void AndroidStreamWorker(std::string host) {
 
             if (begin != buffer.end() && begin != buffer.begin()) {
                 buffer.erase(buffer.begin(), begin);
-            } else if (begin == buffer.end() &&
-                       buffer.size() > 256 * 1024) {
+            } else if (begin == buffer.end() && buffer.size() > 128 * 1024) {
                 buffer.clear();
             }
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(latestMutex);
+        receiverDone = true;
+    }
+    latestCv.notify_all();
+
+    if (decoder.joinable())
+        decoder.join();
 
     if (gStreamSocket == sock)
         gStreamSocket = INVALID_SOCKET;
@@ -602,9 +631,7 @@ static void AndroidStreamWorker(std::string host) {
     closesocket(sock);
 
     if (!gStreamStop.load()) {
-        WriteStatus(
-            L"Stream Android interrotto. Premi Connetti Android per riprovare."
-        );
+        WriteStatus(L"Stream Android interrotto. Premi Connetti Android per riprovare.");
     }
 }
 
