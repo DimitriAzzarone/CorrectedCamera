@@ -41,6 +41,7 @@ static SOCKET gStreamSocket = INVALID_SOCKET;
 static ULONG_PTR gGdiplusToken = 0;
 static HBITMAP gPreview = nullptr;
 static std::mutex gPreviewMutex;
+static ULONGLONG gLastPreviewTick = 0;
 static int gRotation = 0;
 static int gCameraIndex = 0;
 static HANDLE gMap = nullptr;
@@ -142,8 +143,14 @@ static void PublishFrame(const std::vector<BYTE>& frame) {
         InterlockedExchange(&gShared->h.writing, 0);
     }
 
-    CreatePreviewBitmap(frame.data());
-    if (gWnd) PostMessageW(gWnd, WM_FRAME, 0, 0);
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG previewInterval = gOverlayVisible ? 100ULL : 500ULL;
+
+    if (now - gLastPreviewTick >= previewInterval) {
+        gLastPreviewTick = now;
+        CreatePreviewBitmap(frame.data());
+        if (gWnd) PostMessageW(gWnd, WM_FRAME, 0, 0);
+    }
 }
 
 static inline void SampleNearest(const BYTE* src, int sw, int sh, int sstride, bool bottomUp,
@@ -373,7 +380,7 @@ static bool DecodeJpegToFrame(const BYTE* data, size_t size, std::vector<BYTE>& 
     Gdiplus::Graphics graphics(&canvas);
     graphics.Clear(Gdiplus::Color(255, 0, 0, 0));
     graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
-    graphics.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighSpeed);
     graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighSpeed);
 
@@ -511,7 +518,7 @@ static void AndroidStreamWorker(std::string host) {
     }
 
     WriteStatus(
-        L"Android collegato | bassa latenza | Virtual Camera attiva"
+        L"Android collegato | FAST | Virtual Camera prioritaria"
     );
 
     std::vector<BYTE> buffer;
@@ -814,9 +821,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_FRAME:
-        InvalidateRect(hwnd, nullptr, FALSE);
+        if (IsWindowVisible(hwnd) && !IsIconic(hwnd))
+            InvalidateRect(hwnd, nullptr, FALSE);
+
         if (gOverlay && gOverlayVisible)
             InvalidateRect(gOverlay, nullptr, FALSE);
+
         return 0;
 
     case WM_PAINT: {
