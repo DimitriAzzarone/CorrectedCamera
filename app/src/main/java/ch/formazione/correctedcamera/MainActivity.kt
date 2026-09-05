@@ -113,7 +113,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
 
         if (FloatingCameraService.isRunning) {
-            stopService(Intent(this, FloatingCameraService::class.java))
+            binding.statusText.text = "Trasmissione in background attiva"
+            return
         }
 
         if (
