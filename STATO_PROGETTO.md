@@ -56,6 +56,18 @@ APK Test separata dall'originale, evitando di richiedere la disinstallazione o p
 
 Dieci test passati: sette sul buffer/coda/ritmo e tre di grafica nativa su pixel, rotazione e gestione dei bitmap. Compilazione Kotlin/Java Android riuscita con JDK 17; controllo statico Android senza errori. Rimangono avvisi non bloccanti, in parte già presenti nella base.
 
+## Compilazione e consegna verificate
+
+Il workflow Android è riuscito il 13 novembre 2026: https://github.com/DimitriAzzarone/CorrectedCamera/actions/runs/43434047472 . Test e controllo statico passati; step Build debug APK riuscito e artifact CorrectedCamera-debug presente. Codice compilato: b7e4460ed56a5e516f5281c8921d61a183a429ae.
+
+Due esecuzioni precedenti si erano fermate sulla configurazione dei test: memoria consumata dal vecchio Jetifier su una dipendenza nativa Robolectric e directory home del resolver mancante in un runner pulito. Rimossi il trasformatore non necessario, limitati memoria/worker Gradle e creata la directory di test prima dell'avvio. Verificata anche l'esecuzione locale dei dieci test senza cache della home di Robolectric.
+
+L'APK di prova è stata firmata con una chiave stabile separata dalla vecchia app, controllata con apksig e caricata in Programmazione su Drive. Identificativo ch.formazione.correctedcamera.stability, versione 0.3.0-test, codice 3. Non è un aggiornamento della vecchia installazione. Nessuna prova hardware o chiamata reale eseguita da questo ambiente.
+
+## Alternative richieste
+
+Esaminati i componenti Windows già nel repository. Il ricevitore MJPEG e la camera virtuale DirectShow sono due progetti con sorgenti diverse: il ponte fra loro è una possibilità futura, non una funzione implementata in questa APK. Vedere [OPZIONI_ANDROID_WINLATOR_WHATSAPP.md](OPZIONI_ANDROID_WINLATOR_WHATSAPP.md).
+
 ## Prossimo passo
 
-Completare il workflow GitHub e verificare l'artifact. Poi prova sul tablet in due fasi: sorgente locale stabile e chiamata/condivisione reale. Non dichiarare risolto il video ricevuto dalla studentessa finché questa verifica non è stata eseguita.
+Prova sul tablet in due fasi: sorgente locale stabile e chiamata/condivisione reale, dopo aver arrestato la vecchia app. Non dichiarare risolto il video ricevuto dalla studentessa finché questa verifica non è stata eseguita.

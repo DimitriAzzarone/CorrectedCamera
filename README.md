@@ -42,4 +42,4 @@ gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 
 GitHub Actions deve risultare verde, con step **Build debug APK** riuscito e artifact **CorrectedCamera-debug** presente. I test JVM verificano buffer/stride/canali/limiti e gestione della coda; Robolectric con grafica nativa verifica pixel, rotazione e mancato riciclo anticipato dei bitmap visualizzati. Non simulano una fotocamera fisica, il firmware del tablet, termica o una chiamata WhatsApp.
 
-Stato, decisioni e questioni aperte: [STATO_PROGETTO.md](STATO_PROGETTO.md).
+Stato, decisioni e questioni aperte: [STATO_PROGETTO.md](STATO_PROGETTO.md). Alternative richieste: [Android, Winlator e WhatsApp](OPZIONI_ANDROID_WINLATOR_WHATSAPP.md).
