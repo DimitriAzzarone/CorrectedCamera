@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "fix/camera-stream-stability" ]
   pull_request:
 
 jobs:
@@ -25,6 +25,9 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Check camera frame pipeline
+        run: gradle :app:testDebugUnitTest :app:lintDebug --stacktrace
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
@@ -33,3 +36,4 @@ jobs:
         with:
           name: CorrectedCamera-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+

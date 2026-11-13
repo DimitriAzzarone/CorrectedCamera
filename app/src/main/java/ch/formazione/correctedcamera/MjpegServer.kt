@@ -14,6 +14,8 @@ class MjpegServer(private val port: Int = 8080) {
     private val acceptExecutor = Executors.newSingleThreadExecutor()
     private val clientExecutor = Executors.newCachedThreadPool()
 
+    fun clearFrame() { latestJpeg.set(null) }
+
     fun updateFrame(jpeg: ByteArray) {
         latestJpeg.set(jpeg)
     }
@@ -108,3 +110,4 @@ class MjpegServer(private val port: Int = 8080) {
         }
     }
 }
+

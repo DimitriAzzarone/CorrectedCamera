@@ -2,6 +2,7 @@ package ch.formazione.correctedcamera
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -20,8 +21,13 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.ImageView
+import androidx.camera.core.CameraState
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import android.util.Size
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -37,6 +43,8 @@ import kotlin.math.abs
 class FloatingCameraService : Service(), LifecycleOwner {
 
     companion object {
+        const val ACTION_STOP = "ch.formazione.correctedcamera.STOP_CAMERA"
+        @Volatile var overlayVisible = false; private set
         const val EXTRA_FRONT = "front"
         const val EXTRA_ROTATION = "rotation"
         const val EXTRA_CIRCULAR = "circular"
@@ -60,60 +68,81 @@ class FloatingCameraService : Service(), LifecycleOwner {
     private var imageView: ImageView? = null
     private var cameraProvider: ProcessCameraProvider? = null
 
-    private var useFrontCamera = false
-    private var requestedRotation = 0
+    private var analysisUseCase: ImageAnalysis? = null
+    @Volatile private var destroyed = false
+    private var sourceToken = 0L
+    private var errorLabel: TextView? = null
+    private val presenter = BitmapPresenter { imageView }
+    private val pacer = FramePacer()
+    @Volatile private var bindGeneration = 0
+    @Volatile private var useFrontCamera = false
+    @Volatile private var requestedRotation = 0
     private var circular = true
     private var sizeMode = 1
-    private var showOverlay = true
+    @Volatile private var showOverlay = true
     private var lastStreamFrameAt = 0L
     private var lastOverlayFrameAt = 0L
 
     override fun onCreate() {
         super.onCreate()
-        isRunning = true
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
-
         createNotificationChannel()
-        startForeground(
-            2201,
-            NotificationCompat.Builder(this, "corrected_camera_overlay")
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle("Corrected Camera")
-                .setContentText("Trasmissione camera attiva")
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build()
-        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        useFrontCamera = intent?.getBooleanExtra(EXTRA_FRONT, false) ?: false
-        requestedRotation = intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0
-        circular = intent?.getBooleanExtra(EXTRA_CIRCULAR, true) ?: true
-        sizeMode = intent?.getIntExtra(EXTRA_SIZE_MODE, 1) ?: 1
-        showOverlay = intent?.getBooleanExtra(EXTRA_SHOW_OVERLAY, true) ?: true
-
-        if (showOverlay && !Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        CameraStreamHub.start()
-
-        if (showOverlay) {
-            if (overlayRoot == null) {
-                createOverlay()
+        if (intent == null || intent.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
+        val oldFront = useFrontCamera
+        useFrontCamera = intent.getBooleanExtra(EXTRA_FRONT, false)
+        requestedRotation = intent.getIntExtra(EXTRA_ROTATION, 0)
+        circular = intent.getBooleanExtra(EXTRA_CIRCULAR, true)
+        sizeMode = intent.getIntExtra(EXTRA_SIZE_MODE, 1)
+        showOverlay = intent.getBooleanExtra(EXTRA_SHOW_OVERLAY, true)
+        if (showOverlay && !Settings.canDrawOverlays(this)) { stopSelf(); return START_NOT_STICKY }
+        try {
+            if (!isRunning) {
+                sourceToken = CameraStreamHub.beginSource()
+                startForeground(2201, notification("Avvio camera…"))
+                isRunning = true
+                lifecycleRegistry.currentState = Lifecycle.State.STARTED
+                mainHandler.post(healthCheck)
             }
-        } else {
+            overlayVisible = showOverlay
             removeOverlay()
+            if (showOverlay) createOverlay()
+            if (analysisUseCase == null || oldFront != useFrontCamera) startCamera()
+        } catch (e: Exception) {
+            android.util.Log.e("CorrectedCamera", "Avvio servizio camera", e)
+            CameraStreamHub.status(sourceToken, "Avvio camera non riuscito: ${e.javaClass.simpleName}")
+            stopSelf()
         }
+        return START_NOT_STICKY
+    }
 
-        if (cameraProvider == null) {
-            startCamera()
+    private fun notification(message: String): android.app.Notification {
+        val stop = PendingIntent.getService(this, 0, Intent(this, FloatingCameraService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return NotificationCompat.Builder(this, "corrected_camera_overlay")
+            .setSmallIcon(android.R.drawable.ic_menu_camera).setContentTitle("Corrected Camera Test")
+            .setContentText(message).setSubText("Creato da Dimitri Azzarone").setContentIntent(open).setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Ferma camera", stop).build()
+    }
+    private var lastHealthMessage = ""
+    private val healthCheck = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            val age = android.os.SystemClock.elapsedRealtime() - CameraStreamHub.lastFrameAt
+            val message = if (CameraStreamHub.lastFrameAt > 0 && age > 3000 && CameraStreamHub.message == "Video attivo")
+                "Video fermo · controlla se un'altra app usa la camera" else CameraStreamHub.message
+            val healthy = message == "Video attivo"
+            errorLabel?.text = message
+            errorLabel?.visibility = if (healthy) View.GONE else View.VISIBLE
+            if (message != lastHealthMessage) {
+                lastHealthMessage = message
+                if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this@FloatingCameraService, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    getSystemService(NotificationManager::class.java).notify(2201, notification(message))
+            }
+            mainHandler.postDelayed(this, 1000)
         }
-
-        return START_STICKY
     }
 
     private fun removeOverlay() {
@@ -127,6 +156,8 @@ class FloatingCameraService : Service(), LifecycleOwner {
         }
 
         imageView?.setImageDrawable(null)
+        presenter.clearPending()
+        errorLabel = null
         imageView = null
         overlayRoot = null
     }
@@ -161,6 +192,12 @@ class FloatingCameraService : Service(), LifecycleOwner {
             cameraView.clipToOutline = true
         }
 
+        errorLabel = TextView(this).apply {
+            setTextColor(android.graphics.Color.WHITE); setBackgroundColor(0xcc162536.toInt())
+            textSize = 12f; gravity = Gravity.CENTER; text = "Avvio camera…"
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        root.addView(errorLabel, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         val params = WindowManager.LayoutParams(
             size,
             size,
@@ -226,171 +263,66 @@ class FloatingCameraService : Service(), LifecycleOwner {
     }
 
     private fun startCamera() {
+        val generation = ++bindGeneration
         val providerFuture = ProcessCameraProvider.getInstance(this)
-
         providerFuture.addListener({
-            val provider = providerFuture.get()
-            cameraProvider = provider
-
-            var selector =
-                if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
-                else CameraSelector.DEFAULT_BACK_CAMERA
-
-            if (!provider.hasCamera(selector)) {
-                selector =
-                    if (useFrontCamera) CameraSelector.DEFAULT_BACK_CAMERA
-                    else CameraSelector.DEFAULT_FRONT_CAMERA
-            }
-
-            if (!provider.hasCamera(selector)) {
-                stopSelf()
-                return@addListener
-            }
-
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                .build()
-
-            analysis.setAnalyzer(cameraExecutor) { image -> processFrame(image) }
-
+            if (destroyed || generation != bindGeneration) return@addListener
             try {
-                provider.unbindAll()
-                provider.bindToLifecycle(this, selector, analysis)
-            } catch (_: Exception) {
-                stopSelf()
+                val provider = providerFuture.get()
+                cameraProvider = provider
+                analysisUseCase?.let { it.clearAnalyzer(); provider.unbind(it) }
+                var selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                if (!provider.hasCamera(selector)) selector = if (useFrontCamera) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+                require(provider.hasCamera(selector)) { "Nessuna fotocamera disponibile" }
+                val analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(ResolutionSelector.Builder().setResolutionStrategy(ResolutionStrategy(Size(640,480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)).build())
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888).build()
+                analysisUseCase = analysis
+                analysis.setAnalyzer(cameraExecutor) { image ->
+                    if (destroyed || generation != bindGeneration) image.close() else processFrame(image, generation)
+                }
+                val camera = provider.bindToLifecycle(this, selector, analysis)
+                camera.cameraInfo.cameraState.observe(this) { state ->
+                    if (generation != bindGeneration || destroyed) return@observe
+                    if (state.type == CameraState.Type.PENDING_OPEN)
+                        CameraStreamHub.status(sourceToken, "Camera in attesa · possibile uso da un'altra app")
+                    state.error?.let { error ->
+                        val text = when(error.code) {
+                            CameraState.ERROR_CAMERA_IN_USE, CameraState.ERROR_MAX_CAMERAS_IN_USE -> "Fotocamera occupata da un'altra app"
+                            CameraState.ERROR_CAMERA_DISABLED -> "Fotocamera disabilitata dal sistema"
+                            else -> "Errore fotocamera (${error.code})"
+                        }
+                        CameraStreamHub.status(sourceToken, text)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("CorrectedCamera", "Collegamento camera", e)
+                CameraStreamHub.status(sourceToken, "Camera non disponibile: ${e.message}")
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun processFrame(image: ImageProxy) {
-        var cropped: Bitmap? = null
-        var transformed: Bitmap? = null
-        var preview: Bitmap? = null
-
+    private fun processFrame(image: ImageProxy, generation: Int) {
+        var corrected: Bitmap? = null
+        var small: Bitmap? = null
         try {
-            val width = image.width
-            val height = image.height
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * width
-            val paddedWidth = width + rowPadding / pixelStride
-
-            val padded = Bitmap.createBitmap(
-                paddedWidth, height, Bitmap.Config.ARGB_8888
-            )
-            buffer.rewind()
-            padded.copyPixelsFromBuffer(buffer)
-
-            cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
-            padded.recycle()
-
-            val finalRotation =
-                (image.imageInfo.rotationDegrees + requestedRotation) % 360
-
-            transformed =
-                if (finalRotation == 0) {
-                    cropped.copy(Bitmap.Config.ARGB_8888, false)
-                } else {
-                    val matrix = Matrix().apply {
-                        postRotate(finalRotation.toFloat())
-                    }
-                    Bitmap.createBitmap(
-                        cropped, 0, 0, cropped.width, cropped.height, matrix, true
-                    )
-                }
-
-            val now = android.os.SystemClock.elapsedRealtime()
-
-            if (now - lastStreamFrameAt >= 50L) {
-                lastStreamFrameAt = now
-
-                val streamBitmap = scaleForStream(transformed)
-
-                val jpeg =
-                    ByteArrayOutputStream().use { output ->
-                        streamBitmap.compress(
-                            Bitmap.CompressFormat.JPEG,
-                            55,
-                            output
-                        )
-                        output.toByteArray()
-                    }
-
-                if (streamBitmap !== transformed) {
-                    streamBitmap.recycle()
-                }
-
-                CameraStreamHub.updateFrame(jpeg)
+            if (destroyed || !pacer.accept(android.os.SystemClock.elapsedRealtime())) return
+            corrected = BitmapFrames.corrected(image, requestedRotation)
+            small = BitmapFrames.scaled(corrected, 480)
+            val jpeg = ByteArrayOutputStream().use { out -> small.compress(Bitmap.CompressFormat.JPEG, 55, out); out.toByteArray() }
+            if (!destroyed && generation == bindGeneration) {
+                CameraStreamHub.updateFrame(sourceToken, jpeg)
+                if (showOverlay) presenter.offer(BitmapFrames.scaled(corrected, 420, copy = true))
             }
-
-            preview =
-                if (showOverlay && now - lastOverlayFrameAt >= 66L) {
-                    lastOverlayFrameAt = now
-                    scaleForOverlay(transformed)
-                } else {
-                    null
-                }
-
-            val frameToShow = preview
-
-            if (frameToShow != null) mainHandler.post {
-                val iv = imageView
-                if (iv != null && frameToShow != null) {
-                    val old = iv.drawable
-                    iv.setImageBitmap(frameToShow)
-                    if (old is android.graphics.drawable.BitmapDrawable) {
-                        val oldBitmap = old.bitmap
-                        if (oldBitmap !== frameToShow && !oldBitmap.isRecycled) {
-                            oldBitmap.recycle()
-                        }
-                    }
-                } else {
-                    frameToShow?.recycle()
-                }
-            }
-
-            if (frameToShow != null) {
-                preview = null
-            }
+        } catch (e: Exception) {
+            android.util.Log.e("CorrectedCamera", "Elaborazione frame", e)
+            CameraStreamHub.status(sourceToken, "Errore immagine: ${e.javaClass.simpleName}")
         } finally {
-            preview?.recycle()
-            transformed?.recycle()
-            cropped?.recycle()
+            if (small !== corrected) small?.recycle()
+            corrected?.recycle()
             image.close()
         }
-    }
-
-    private fun scaleForStream(source: Bitmap): Bitmap {
-        val maxSide = 480
-        val largest = maxOf(source.width, source.height)
-
-        if (largest <= maxSide) {
-            return source
-        }
-
-        val scale = maxSide.toFloat() / largest.toFloat()
-        val width = maxOf(1, (source.width * scale).toInt())
-        val height = maxOf(1, (source.height * scale).toInt())
-
-        return Bitmap.createScaledBitmap(source, width, height, true)
-    }
-
-    private fun scaleForOverlay(source: Bitmap): Bitmap {
-        val maxSide = 420
-        val largest = maxOf(source.width, source.height)
-
-        if (largest <= maxSide) {
-            return source.copy(Bitmap.Config.ARGB_8888, false)
-        }
-
-        val scale = maxSide.toFloat() / largest.toFloat()
-        val width = maxOf(1, (source.width * scale).toInt())
-        val height = maxOf(1, (source.height * scale).toInt())
-
-        return Bitmap.createScaledBitmap(source, width, height, true)
     }
 
     private fun returnToApp() {
@@ -401,11 +333,16 @@ class FloatingCameraService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
-        cameraProvider?.unbindAll()
+        destroyed = true; bindGeneration++
+        mainHandler.removeCallbacksAndMessages(null)
+        presenter.close()
+        analysisUseCase?.let { it.clearAnalyzer(); cameraProvider?.unbind(it) }
         removeOverlay()
         cameraExecutor.shutdownNow()
+        CameraStreamHub.endSource(sourceToken)
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
-        isRunning = false
+        isRunning = false; overlayVisible = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
@@ -427,3 +364,4 @@ class FloatingCameraService : Service(), LifecycleOwner {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 }
+

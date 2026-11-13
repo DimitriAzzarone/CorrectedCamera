@@ -1,0 +1,7 @@
+.gradle/
+**/build/
+local.properties
+.test-runtime/
+*.log
+*.jks
+*.p12

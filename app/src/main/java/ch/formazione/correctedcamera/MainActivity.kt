@@ -15,6 +15,8 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Rational
@@ -24,6 +26,11 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraState
+import androidx.camera.core.UseCase
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -56,6 +63,15 @@ class MainActivity : AppCompatActivity() {
     private val userRotation = AtomicInteger(0)
     private val latestCorrectedJpeg = AtomicReference<ByteArray?>(null)
 
+    private var cameraProvider: ProcessCameraProvider? = null
+    private val ownedUseCases = mutableListOf<UseCase>()
+    @Volatile private var cameraGeneration = 0
+    @Volatile private var handoffPending = false
+    @Volatile private var destroyed = false
+    @Volatile private var sourceToken = 0L
+    private val handler = Handler(Looper.getMainLooper())
+    private val presenter = BitmapPresenter { if (destroyed) null else binding.processedImageView }
+    private val pacer = FramePacer()
     private var useFrontCamera = false
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
@@ -111,8 +127,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        handler.removeCallbacks(cameraHealthUi)
+        handler.postDelayed(cameraHealthUi, 1000)
 
-        if (FloatingCameraService.isRunning) {
+        if (FloatingCameraService.isRunning || handoffPending) {
             binding.statusText.text = "Trasmissione in background attiva"
             return
         }
@@ -139,14 +157,14 @@ class MainActivity : AppCompatActivity() {
         binding.rotateLeftButton.setOnClickListener {
             if (activeRecording == null) {
                 userRotation.set((userRotation.get() + 270) % 360)
-                startCamera()
+                applyCameraSettings()
             }
         }
 
         binding.rotateRightButton.setOnClickListener {
             if (activeRecording == null) {
                 userRotation.set((userRotation.get() + 90) % 360)
-                startCamera()
+                applyCameraSettings()
             }
         }
 
@@ -171,11 +189,13 @@ class MainActivity : AppCompatActivity() {
         binding.pipShapeButton.setOnClickListener {
             pipCircular = !pipCircular
             updatePipChoiceButtons()
+            if (FloatingCameraService.isRunning) applyCameraSettings()
         }
 
         binding.pipSizeButton.setOnClickListener {
             pipSizeMode = (pipSizeMode + 1) % 3
             updatePipChoiceButtons()
+            if (FloatingCameraService.isRunning) applyCameraSettings()
         }
 
         binding.alwaysOnTopButton.setOnClickListener {
@@ -183,22 +203,40 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.hideOverlayButton.setOnClickListener {
-            startBackgroundCameraService(showOverlay = false)
-            moveTaskToBack(true)
+            startBackgroundCameraService(showOverlay = false, minimizeAfterReady = true)
         }
 
-        if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            startCamera()
-        } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
+        binding.stopOverlayButton.setOnClickListener {
+            if (activeRecording != null) {
+                Toast.makeText(this, "Ferma prima la registrazione video", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            handoffPending = false; cameraGeneration++
+            stopService(Intent(this, FloatingCameraService::class.java))
+            releaseOwnCamera()
+            binding.statusText.text = "Camera flottante fermata · puoi tornare alla chiamata"
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        // Initial binding happens in onResume, not twice in onCreate/onResume.
     }
 
+
+    private var showingCameraWarning = false
+    private val cameraHealthUi = object : Runnable {
+        override fun run() {
+            if (destroyed || !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return
+            if (!handoffPending && (sourceToken != 0L || FloatingCameraService.isRunning)) {
+                val age = android.os.SystemClock.elapsedRealtime() - CameraStreamHub.lastFrameAt
+                val message = if (CameraStreamHub.lastFrameAt > 0 && age > 3000 && CameraStreamHub.message == "Video attivo")
+                    "Video fermo · possibile uso della camera da un'altra app" else CameraStreamHub.message
+                if (message != "Video attivo") { binding.statusText.text = message; showingCameraWarning = true }
+                else if (showingCameraWarning) { showingCameraWarning = false; updateStatus() }
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
+    override fun onPause() { handler.removeCallbacks(cameraHealthUi); super.onPause() }
 
     private fun updatePipChoiceButtons() {
         binding.pipShapeButton.text =
@@ -222,10 +260,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restoreWindowTaskTitle() {
-        title = "Corrected Camera"
+        title = "Corrected Camera Test"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             setTaskDescription(
-                ActivityManager.TaskDescription("Corrected Camera")
+                ActivityManager.TaskDescription("Corrected Camera Test")
             )
         }
     }
@@ -322,29 +360,69 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startFloatingOverlay() {
-        startBackgroundCameraService(showOverlay = true)
-        moveTaskToBack(true)
+        startBackgroundCameraService(showOverlay = true, minimizeAfterReady = true)
     }
 
-    private fun startBackgroundCameraService(showOverlay: Boolean) {
-        val providerFuture = ProcessCameraProvider.getInstance(this)
+    private fun applyCameraSettings() {
+        if (FloatingCameraService.isRunning) startBackgroundCameraService(FloatingCameraService.overlayVisible)
+        else updateStatus() // Rotation is an image transform; it need not reopen the camera.
+    }
 
-        providerFuture.addListener({
+    private fun releaseOwnCamera() {
+        cameraGeneration++
+        ownedUseCases.filterIsInstance<ImageAnalysis>().forEach { it.clearAnalyzer() }
+        if (ownedUseCases.isNotEmpty()) cameraProvider?.unbind(*ownedUseCases.toTypedArray())
+        ownedUseCases.clear(); videoCapture = null
+        presenter.clearPending()
+        CameraStreamHub.endSource(sourceToken); sourceToken = 0
+    }
+
+    private fun startBackgroundCameraService(showOverlay: Boolean, minimizeAfterReady: Boolean = false) {
+        if (handoffPending) return
+        if (activeRecording != null) {
+            Toast.makeText(this, "Ferma prima la registrazione della camera", Toast.LENGTH_LONG).show(); return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            binding.statusText.text = "Concedi prima il permesso fotocamera"; return
+        }
+        handoffPending = true
+        cameraGeneration++ // Invalidate any late Activity provider callback.
+        binding.root.post {
+            if (destroyed || !handoffPending) return@post
+            if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                handoffPending = false; binding.statusText.text = "Torna nell'app per avviare la camera flottante"; return@post
+            }
             try {
-                providerFuture.get().unbindAll()
-            } catch (_: Exception) {
+                releaseOwnCamera()
+                val intent = Intent(this, FloatingCameraService::class.java).apply {
+                    putExtra(FloatingCameraService.EXTRA_FRONT, useFrontCamera)
+                    putExtra(FloatingCameraService.EXTRA_ROTATION, userRotation.get())
+                    putExtra(FloatingCameraService.EXTRA_CIRCULAR, pipCircular)
+                    putExtra(FloatingCameraService.EXTRA_SIZE_MODE, pipSizeMode)
+                    putExtra(FloatingCameraService.EXTRA_SHOW_OVERLAY, showOverlay)
+                }
+                ContextCompat.startForegroundService(this, intent)
+                binding.statusText.text = "Avvio camera flottante…"
+                val deadline = android.os.SystemClock.elapsedRealtime() + 10000
+                fun awaitReady() {
+                    if (destroyed || !handoffPending) return
+                    val ready = FloatingCameraService.isRunning && CameraStreamHub.lastFrameAt > 0 &&
+                            android.os.SystemClock.elapsedRealtime() - CameraStreamHub.lastFrameAt < 1500
+                    if (ready) {
+                        handoffPending = false
+                        binding.statusText.text = "Camera flottante attiva"
+                        if (minimizeAfterReady && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) moveTaskToBack(true)
+                    } else if (android.os.SystemClock.elapsedRealtime() > deadline) {
+                        handoffPending = false
+                        binding.statusText.text = "Camera non pronta: ${CameraStreamHub.message}"
+                    } else handler.postDelayed({ awaitReady() }, 200)
+                }
+                handler.postDelayed({ awaitReady() }, 200)
+            } catch (e: Exception) {
+                handoffPending = false
+                binding.statusText.text = "Avvio camera non riuscito: ${e.message}"
             }
-
-            val intent = Intent(this, FloatingCameraService::class.java).apply {
-                putExtra(FloatingCameraService.EXTRA_FRONT, useFrontCamera)
-                putExtra(FloatingCameraService.EXTRA_ROTATION, userRotation.get())
-                putExtra(FloatingCameraService.EXTRA_CIRCULAR, pipCircular)
-                putExtra(FloatingCameraService.EXTRA_SIZE_MODE, pipSizeMode)
-                putExtra(FloatingCameraService.EXTRA_SHOW_OVERLAY, showOverlay)
-            }
-
-            ContextCompat.startForegroundService(this, intent)
-        }, ContextCompat.getMainExecutor(this))
+        }
     }
 
     private fun toggleScreenRecording() {
@@ -471,15 +549,21 @@ class MainActivity : AppCompatActivity() {
             }
 
             useFrontCamera = requestedFront
-            startCamera()
+            if (FloatingCameraService.isRunning) applyCameraSettings() else { releaseOwnCamera(); startCamera() }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun startCamera() {
+        if (destroyed || handoffPending || FloatingCameraService.isRunning) return
+        if (ownedUseCases.isNotEmpty()) return // CameraX resumes this lifecycle itself.
+        val generation = ++cameraGeneration
         val providerFuture = ProcessCameraProvider.getInstance(this)
 
         providerFuture.addListener({
+            if (destroyed || handoffPending || FloatingCameraService.isRunning || generation != cameraGeneration) return@addListener
             val provider = providerFuture.get()
+            cameraProvider = provider
+            sourceToken = CameraStreamHub.beginSource()
 
             val selector =
                 if (useFrontCamera) {
@@ -511,6 +595,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(ResolutionSelector.Builder().setResolutionStrategy(ResolutionStrategy(Size(640,480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)).build())
                 .setBackpressureStrategy(
                     ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
                 )
@@ -519,8 +604,9 @@ class MainActivity : AppCompatActivity() {
                 )
                 .build()
 
+            val frameSource = sourceToken
             analysis.setAnalyzer(cameraExecutor) { image ->
-                processFrame(image)
+                if (destroyed || handoffPending || generation != cameraGeneration) image.close() else processFrame(image, frameSource, generation)
             }
 
             val recorder = Recorder.Builder()
@@ -538,15 +624,25 @@ class MainActivity : AppCompatActivity() {
             capture.targetRotation = rotationToSurface(userRotation.get())
 
             try {
-                provider.unbindAll()
-
-                provider.bindToLifecycle(
+                if (ownedUseCases.isNotEmpty()) provider.unbind(*ownedUseCases.toTypedArray())
+                ownedUseCases.clear()
+                val camera = provider.bindToLifecycle(
                     this,
                     selector,
                     analysis,
                     capture
                 )
 
+                ownedUseCases.addAll(listOf(analysis, capture))
+                camera.cameraInfo.cameraState.observe(this) { state ->
+                    if (generation != cameraGeneration) return@observe
+                    state.error?.let { error ->
+                        binding.statusText.text = when(error.code) {
+                            CameraState.ERROR_CAMERA_IN_USE, CameraState.ERROR_MAX_CAMERAS_IN_USE -> "Fotocamera occupata da un'altra app"
+                            else -> "Errore fotocamera (${error.code})"
+                        }
+                    }
+                }
                 videoCapture = capture
                 updateStatus()
 
@@ -555,14 +651,15 @@ class MainActivity : AppCompatActivity() {
                 // contemporaneamente sulla camera frontale. In quel caso
                 // manteniamo preview/stream/foto e disabilitiamo solo Video camera.
                 try {
-                    provider.unbindAll()
-
+                    provider.unbind(analysis, capture)
+                    ownedUseCases.clear()
                     provider.bindToLifecycle(
                         this,
                         selector,
                         analysis
                     )
 
+                    ownedUseCases.add(analysis)
                     videoCapture = null
                     binding.videoButton.isEnabled = false
 
@@ -587,138 +684,25 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun processFrame(image: ImageProxy) {
-
-        var cropped: Bitmap? = null
-        var transformed: Bitmap? = null
-
+    private fun processFrame(image: ImageProxy, owner: Long, generation: Int) {
+        var corrected: Bitmap? = null
+        var small: Bitmap? = null
         try {
-
-            val width = image.width
-            val height = image.height
-
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * width
-            val paddedWidth = width + rowPadding / pixelStride
-
-            val paddedBitmap =
-                Bitmap.createBitmap(
-                    paddedWidth,
-                    height,
-                    Bitmap.Config.ARGB_8888
-                )
-
-            buffer.rewind()
-            paddedBitmap.copyPixelsFromBuffer(buffer)
-
-            cropped =
-                Bitmap.createBitmap(
-                    paddedBitmap,
-                    0,
-                    0,
-                    width,
-                    height
-                )
-
-            paddedBitmap.recycle()
-
-            val cameraRotation = image.imageInfo.rotationDegrees
-            val requestedRotation = userRotation.get()
-            val finalRotation = (cameraRotation + requestedRotation) % 360
-
-            val matrix = Matrix()
-
-            if (finalRotation != 0) {
-                matrix.postRotate(finalRotation.toFloat())
-            }
-
-            transformed =
-                if (finalRotation == 0) {
-
-                    cropped.copy(
-                        Bitmap.Config.ARGB_8888,
-                        false
-                    )
-
-                } else {
-
-                    Bitmap.createBitmap(
-                        cropped,
-                        0,
-                        0,
-                        cropped.width,
-                        cropped.height,
-                        matrix,
-                        true
-                    )
-                }
-
-            val previewBitmap =
-                transformed.copy(
-                    Bitmap.Config.ARGB_8888,
-                    false
-                )
-
-            runOnUiThread {
-                binding.processedImageView.setImageBitmap(previewBitmap)
-            }
-
-            val now = android.os.SystemClock.elapsedRealtime()
-
-            if (now - lastMainStreamFrameAt >= 50L) {
-                lastMainStreamFrameAt = now
-
-                val streamBitmap =
-                    if (maxOf(transformed.width, transformed.height) > 480) {
-                        val scale =
-                            480f / maxOf(
-                                transformed.width,
-                                transformed.height
-                            ).toFloat()
-
-                        Bitmap.createScaledBitmap(
-                            transformed,
-                            maxOf(1, (transformed.width * scale).toInt()),
-                            maxOf(1, (transformed.height * scale).toInt()),
-                            true
-                        )
-                    } else {
-                        transformed
-                    }
-
-                val jpeg =
-                    ByteArrayOutputStream().use { output ->
-                        streamBitmap.compress(
-                            Bitmap.CompressFormat.JPEG,
-                            55,
-                            output
-                        )
-                        output.toByteArray()
-                    }
-
-                if (streamBitmap !== transformed) {
-                    streamBitmap.recycle()
-                }
-
+            if (destroyed || handoffPending || !pacer.accept(android.os.SystemClock.elapsedRealtime())) return
+            corrected = BitmapFrames.corrected(image, userRotation.get())
+            small = BitmapFrames.scaled(corrected, 480)
+            val jpeg = ByteArrayOutputStream().use { out -> small.compress(Bitmap.CompressFormat.JPEG, 55, out); out.toByteArray() }
+            if (!destroyed && !handoffPending && owner == sourceToken && owner != 0L && generation == cameraGeneration) {
                 latestCorrectedJpeg.set(jpeg)
-                CameraStreamHub.updateFrame(jpeg)
+                CameraStreamHub.updateFrame(owner, jpeg)
+                presenter.offer(BitmapFrames.scaled(corrected, 640, copy = true))
             }
-
         } catch (e: Exception) {
-
-            runOnUiThread {
-                binding.statusText.text =
-                    "Errore frame: ${e.message}"
-            }
-
+            android.util.Log.e("CorrectedCamera", "Elaborazione frame Activity", e)
+            CameraStreamHub.status(owner, "Errore immagine: ${e.javaClass.simpleName}")
         } finally {
-
-            transformed?.recycle()
-            cropped?.recycle()
+            if (small !== corrected) small?.recycle()
+            corrected?.recycle()
             image.close()
         }
     }
@@ -1005,12 +989,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-
+        destroyed = true; handoffPending = false
+        handler.removeCallbacksAndMessages(null)
+        presenter.close()
         activeRecording?.stop()
         activeRecording = null
+        releaseOwnCamera()
 
         cameraExecutor.shutdown()
 
         super.onDestroy()
     }
 }
+

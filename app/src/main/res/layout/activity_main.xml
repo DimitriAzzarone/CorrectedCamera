@@ -138,6 +138,14 @@
             android:text="◉ Sempre in primo piano"/>
 
         <Button
+            android:id="@+id/stopOverlayButton"
+            style="@style/CorrectedCameraButton.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Ferma fotocamera"/>
+
+        <Button
             android:id="@+id/hideOverlayButton"
             style="@style/CorrectedCameraButton.Secondary"
             android:layout_width="match_parent"
@@ -146,3 +154,4 @@
             android:text="Nascondi"/>
     </LinearLayout>
 </LinearLayout>
+

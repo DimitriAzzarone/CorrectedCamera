@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -12,7 +13,7 @@
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="Corrected Camera"
+        android:label="Corrected Camera Test"
         android:supportsRtl="true"
         android:theme="@style/Theme.CorrectedCamera"
         android:usesCleartextTraffic="true">
@@ -40,3 +41,4 @@
             android:foregroundServiceType="mediaProjection"/>
     </application>
 </manifest>
+

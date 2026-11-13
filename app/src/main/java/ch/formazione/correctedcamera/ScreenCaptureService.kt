@@ -14,6 +14,8 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
@@ -42,6 +44,9 @@ class ScreenCaptureService : Service() {
     private var outputUri: Uri? = null
     private var outputPfd: ParcelFileDescriptor? = null
     private var stopped = false
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() { stopCapture() }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -89,6 +94,7 @@ class ScreenCaptureService : Service() {
                 getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
             projection = manager.getMediaProjection(resultCode, resultData)
+            projection?.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
 
             val (width, height, density) = screenMetrics()
             val safeWidth = if (width % 2 == 0) width else width - 1
@@ -234,6 +240,7 @@ class ScreenCaptureService : Service() {
         virtualDisplay = null
 
         try {
+            projection?.unregisterCallback(projectionCallback)
             projection?.stop()
         } catch (_: Exception) {
         }
@@ -272,3 +279,4 @@ class ScreenCaptureService : Service() {
         super.onDestroy()
     }
 }
+
