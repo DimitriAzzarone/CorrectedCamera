@@ -36,7 +36,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
-            it.systemProperty("user.home", rootProject.layout.projectDirectory.dir(".test-runtime").asFile.absolutePath)
+            val testHome = rootProject.layout.projectDirectory.dir(".test-runtime").asFile
+            it.doFirst { testHome.mkdirs(); testHome.resolve(".m2/repository").mkdirs() }
+            it.systemProperty("user.home", testHome.absolutePath)
+            it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
             it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
             listOf("http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "javax.net.ssl.trustStore", "javax.net.ssl.trustStorePassword").forEach { key -> System.getProperty(key)?.let { value -> it.systemProperty(key,value) } }
         }
